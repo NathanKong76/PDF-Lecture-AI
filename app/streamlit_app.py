@@ -92,10 +92,12 @@ def cached_process_pdf(src_bytes: bytes, params: dict) -> dict:
 			temperature=params["temperature"],
 			max_tokens=params["max_tokens"],
 			dpi=params["dpi"],
-			concurrency=min(params["concurrency"], 10),
+			concurrency=params["concurrency"],
 			rpm_limit=params["rpm_limit"],
 			tpm_budget=params["tpm_budget"],
 			rpd_limit=params["rpd_limit"],
+			use_context=params.get("use_context", False),
+			context_prompt=params.get("context_prompt", None),
 		)
 
 		result_bytes = pdf_processor.compose_pdf(
@@ -157,6 +159,12 @@ def sidebar_form():
 		user_prompt = st.text_area("讲解风格/要求(系统提示)", value="请用中文讲解本页pdf，关键词给出英文，讲解详尽，语言简洁易懂。讲解让人一看就懂，便于快速学习。请避免不必要的换行，使页面保持紧凑。")
 		cjk_font_path = st.text_input("CJK 字体文件路径(可选)", value="assets/fonts/SIMHEI.TTF")
 		render_mode = st.selectbox("右栏渲染方式", ["text", "markdown"], index=1)
+		
+		st.divider()
+		st.subheader("上下文增强")
+		use_context = st.checkbox("启用前后各1页上下文", value=False, help="启用后，LLM将同时看到前一页、当前页和后一页的内容，提高讲解连贯性。会增加API调用成本。")
+		context_prompt_text = st.text_area("上下文提示词", value="你将看到前一页、当前页和后一页的内容。请结合上下文信息，生成连贯的讲解。当前页是重点讲解页面，你不需要跟我讲上一页、下一页讲了什么。", disabled=not use_context, help="独立的上下文说明提示词，用于指导LLM如何处理多页内容。")
+		
 		return {
 			"api_key": api_key,
 			"model_name": model_name,
@@ -174,6 +182,8 @@ def sidebar_form():
 			"user_prompt": user_prompt.strip(),
 			"cjk_font_path": cjk_font_path.strip(),
 			"render_mode": render_mode,
+			"use_context": bool(use_context),
+			"context_prompt": context_prompt_text.strip() if use_context else None,
 		}
 
 
@@ -455,12 +465,14 @@ def main():
 										temperature=params["temperature"],
 										max_tokens=params["max_tokens"],
 										dpi=params["dpi"],
-										concurrency=min(params["concurrency"], 10),
+										concurrency=params["concurrency"],
 										rpm_limit=params["rpm_limit"],
 										tpm_budget=params["tpm_budget"],
 										rpd_limit=params["rpd_limit"],
 										on_progress=on_file_progress,
 										on_log=on_file_log,
+										use_context=params.get("use_context", False),
+										context_prompt=params.get("context_prompt", None),
 									)
 
 									result_bytes = pdf_processor.compose_pdf(

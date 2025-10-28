@@ -165,7 +165,7 @@ def _compose_vector(dst_doc: fitz.Document, src_doc: fitz.Document, pno: int,
     right_start = w + margin_x
     right_end = new_w - margin_x
     available_width = max(right_end - right_start, 1)
-    column_spacing = 20
+    column_spacing = 12
     max_columns = 3
 
     fontname = "china"
@@ -192,7 +192,8 @@ def _compose_vector(dst_doc: fitz.Document, src_doc: fitz.Document, pno: int,
     line_height = font_size * max(1.0, line_spacing)
     bottom_core = int(line_height * 1.25)
     bottom_safe = (min(max(16, bottom_core), 36) if render_mode == "markdown" else 0)
-    column_internal_margin = max(column_padding, int(font_size * 1.05))
+    left_internal_margin = max(column_padding, int(font_size * 1.6))
+    right_internal_margin = max(column_padding, int(font_size * 0.8))
     total_spacing = column_spacing * (max_columns - 1)
     column_width = max(1.0, (available_width - total_spacing) / max(max_columns, 1))
 
@@ -207,10 +208,10 @@ def _compose_vector(dst_doc: fitz.Document, src_doc: fitz.Document, pno: int,
         for idx in range(count):
             x_left = right_start + idx * (column_width + column_spacing)
             x_right = x_left + column_width
-            x0 = x_left + column_internal_margin
-            x1 = min(x_right, right_end) - column_internal_margin
+            x0 = x_left + left_internal_margin
+            x1 = min(x_right, right_end) - right_internal_margin
             if x1 <= x0:
-                x1 = x0 + max(font_size * 0.5, 1)
+                x1 = x0 + max(font_size * 0.75, 1)
             rects.append(fitz.Rect(x0, top, x1, bottom))
         return rects
 
@@ -262,7 +263,7 @@ def _compose_vector(dst_doc: fitz.Document, src_doc: fitz.Document, pno: int,
                 table {{ border-collapse: collapse; width: 100%; }}
                 th, td {{ border: 1px solid #ccc; padding: 2pt 4pt; color: #000000; }}
                 body, p, h1, h2, h3, h4, h5, h6, ul, ol, pre, table {{ margin: 0; padding: 0; color: #000000; }}
-                ul, ol {{ padding-left: 18pt; list-style-position: inside; }}
+                ul, ol {{ padding-left: 0; list-style-position: inside; }}
                 p {{ margin-bottom: 1pt; }}
                 """
                 dpage.insert_htmlbox(rect, html, css=css)
@@ -297,7 +298,9 @@ def _compose_vector(dst_doc: fitz.Document, src_doc: fitz.Document, pno: int,
 
 
 async def _process_one(pno: int, src_doc: fitz.Document, dpi: int, client: GeminiClient,
-					system_prompt: str, right_ratio: float, font_size: int) -> Tuple[int, Optional[str], bytes, Optional[Exception]]:
+					system_prompt: str, right_ratio: float, font_size: int,
+					use_context: bool = False, context_images: Optional[Dict[int, bytes]] = None,
+					context_prompt: Optional[str] = None) -> Tuple[int, Optional[str], bytes, Optional[Exception]]:
 	img_bytes = _page_png_bytes(src_doc, pno, dpi)
 	# 生成预览缩略图（无论是否成功都可展示原页缩略图）
 	preview = Image.open(io.BytesIO(img_bytes))
@@ -305,7 +308,22 @@ async def _process_one(pno: int, src_doc: fitz.Document, dpi: int, client: Gemin
 	bio = io.BytesIO()
 	preview.save(bio, format="PNG")
 	try:
-		expl = await client.explain_page(img_bytes, system_prompt)
+		if use_context and context_images:
+			# 收集上下文图片和标签：前页、当前页、后页
+			images_with_labels = []
+			# 添加前页
+			if (pno - 1) in context_images:
+				images_with_labels.append(("前一页", context_images[pno - 1]))
+			# 添加当前页
+			images_with_labels.append(("当前页（重点讲解）", img_bytes))
+			# 添加后页
+			if (pno + 1) in context_images:
+				images_with_labels.append(("后一页", context_images[pno + 1]))
+			# 调用上下文版本的讲解方法
+			expl = await client.explain_pages_with_context(images_with_labels, system_prompt, context_prompt)
+		else:
+			# 使用原有单页方法（保持向后兼容）
+			expl = await client.explain_page(img_bytes, system_prompt)
 		return pno, expl, bio.getvalue(), None
 	except Exception as e:
 		return pno, None, bio.getvalue(), e
@@ -319,7 +337,9 @@ def generate_explanations(src_bytes: bytes, api_key: str, model_name: str, user_
 				on_log: Optional[Callable[[str], None]] = None,
 				retry_blank: bool = False,
 				blank_min_chars: int = 10,
-				blank_retry_times: int = 1) -> Tuple[Dict[int, str], List[bytes], List[int]]:
+				blank_retry_times: int = 1,
+				use_context: bool = False,
+				context_prompt: Optional[str] = None) -> Tuple[Dict[int, str], List[bytes], List[int]]:
 	# 打开源 PDF
 	src_doc = fitz.open(stream=src_bytes, filetype="pdf")
 	n_pages = src_doc.page_count
@@ -337,6 +357,15 @@ def generate_explanations(src_bytes: bytes, api_key: str, model_name: str, user_
 
 	to_process = pages if pages is not None else list(range(n_pages))
 
+	# 如果启用上下文，预先生成所有页面的图片缓存
+	context_images: Optional[Dict[int, bytes]] = None
+	if use_context:
+		if on_log:
+			on_log("预先生成所有页面图片缓存（用于上下文）...")
+		context_images = {}
+		for pno in range(n_pages):
+			context_images[pno] = _page_png_bytes(src_doc, pno, dpi)
+
 	async def run_all():
 		sem = asyncio.Semaphore(concurrency)
 		results: List[Tuple[int, Optional[str], bytes, Optional[Exception]]] = []
@@ -346,7 +375,10 @@ def generate_explanations(src_bytes: bytes, api_key: str, model_name: str, user_
 		async def worker(i: int):
 			nonlocal done
 			async with sem:
-				return await _process_one(i, src_doc, dpi, client, user_prompt, 0.0, 0)
+				return await _process_one(i, src_doc, dpi, client, user_prompt, 0.0, 0,
+											use_context=use_context,
+											context_images=context_images,
+											context_prompt=context_prompt)
 
 		pending = [worker(i) for i in to_process]
 		for coro in asyncio.as_completed(pending):
@@ -366,7 +398,10 @@ def generate_explanations(src_bytes: bytes, api_key: str, model_name: str, user_
 
 		async def worker2(i: int):
 			async with sem:
-				return await _process_one(i, src_doc, dpi, client, user_prompt, 0.0, 0)
+				return await _process_one(i, src_doc, dpi, client, user_prompt, 0.0, 0,
+											use_context=use_context,
+											context_images=context_images,
+											context_prompt=context_prompt)
 
 		pending2 = [worker2(i) for i in to_retry]
 		for coro in asyncio.as_completed(pending2):

@@ -69,17 +69,40 @@ class GeminiClient:
 		self.logger = logger
 
 	async def explain_page(self, image_bytes: bytes, system_prompt: str) -> str:
-		# 估算输出 tokens（目标 800~1200字）
-		est = estimate_tokens(1200)
+		"""处理单页讲解（保持向后兼容）"""
+		return await self.explain_pages_with_context([("当前页", image_bytes)], system_prompt)
+
+	async def explain_pages_with_context(self, images_with_labels: list[Tuple[str, bytes]], system_prompt: str, context_prompt: Optional[str] = None) -> str:
+		"""处理带上下文的页面讲解
+		
+		Args:
+			images_with_labels: (标签, 图片字节) 元组列表，顺序为 [("前一页", bytes), ("当前页", bytes), ("后一页", bytes)]
+			system_prompt: 用户自定义的系统提示词
+			context_prompt: 独立的上下文说明提示词（可选）
+			
+		Returns:
+			讲解文本
+		"""
+		# 估算输出 tokens（目标 800~1200字），考虑多图增加开销
+		base_tokens = estimate_tokens(1200)
+		image_overhead = len(images_with_labels) * 200  # 每张图片约增加200 tokens
+		est = base_tokens + image_overhead
 		await self.ratelimiter.wait_for_slot(est)
 
-		# 将图片字节转为 data URL 以适配 image_url 格式
-		b64 = base64.b64encode(image_bytes).decode("utf-8")
-		data_url = f"data:image/png;base64,{b64}"
-		content = [
-			{"type": "text", "text": system_prompt},
-			{"type": "image_url", "image_url": data_url},
-		]
+		# 构建完整提示词
+		full_prompt = system_prompt
+		if context_prompt:
+			full_prompt = f"{context_prompt}\n\n{system_prompt}"
+
+		# 将图片字节转为 data URL，每张图片前添加说明文本
+		content = [{"type": "text", "text": full_prompt}]
+		for label, img_bytes in images_with_labels:
+			# 添加图片说明
+			content.append({"type": "text", "text": f"【{label}】"})
+			# 添加图片
+			b64 = base64.b64encode(img_bytes).decode("utf-8")
+			data_url = f"data:image/png;base64,{b64}"
+			content.append({"type": "image_url", "image_url": data_url})
 
 		backoff = 1.5
 		delay = 1.0
