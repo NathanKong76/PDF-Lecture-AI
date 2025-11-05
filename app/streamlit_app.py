@@ -87,54 +87,71 @@ def sidebar_form():
 			help="text: 普通文本模式\nmarkdown: 使用 PyMuPDF 的 htmlbox 渲染 Markdown\npandoc: 使用 Pandoc + LaTeX 生成高质量 PDF（需要安装 Pandoc 和 MiKTeX）"
 		)
 
-		st.divider()
-		st.subheader("输出模式选择")
-		output_mode = st.radio(
-			"选择输出格式",
-			["Markdown截图讲解","PDF讲解版",],
-			help="PDF讲解版：在PDF右侧添加讲解文字\nMarkdown截图讲解：生成包含页面截图和讲解的markdown文档"
-		)
+	st.divider()
+	st.subheader("输出模式选择")
+	output_mode = st.radio(
+		"选择输出格式",
+		["Markdown截图讲解","PDF讲解版","HTML截图版"],
+		help="PDF讲解版：在PDF右侧添加讲解文字\nMarkdown截图讲解：生成包含页面截图和讲解的markdown文档\nHTML截图版：生成单个HTML文件，左侧显示PDF截图，右侧显示多栏markdown渲染讲解"
+	)
 
-		# Markdown模式的参数
-		if output_mode == "Markdown截图讲解":
-			st.subheader("📝 Markdown参数")
-			screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
-			embed_images = st.checkbox("嵌入图片到Markdown", value=False, help="将截图base64编码嵌入markdown文件，否则使用外部图片文件")
-			markdown_title = st.text_input("文档标题", value="PDF文档讲解")
-		else:
-			screenshot_dpi = 150
-			embed_images = True
-			markdown_title = "PDF文档讲解"
-		
-		st.divider()
-		st.subheader("上下文增强")
-		use_context = st.checkbox("启用前后各1页上下文", value=False, help="启用后，LLM将同时看到前一页、当前页和后一页的内容，提高讲解连贯性。会增加API调用成本。")
-		context_prompt_text = st.text_area("上下文提示词", value="你将看到前一页、当前页和后一页的内容。请结合上下文信息，生成连贯的讲解。当前页是重点讲解页面，你不需要跟我讲上一页、下一页讲了什么。", disabled=not use_context, help="独立的上下文说明提示词，用于指导LLM如何处理多页内容。")
-		
-		return {
-			"api_key": api_key,
-			"model_name": model_name,
-			"temperature": float(temperature),
-			"max_tokens": int(max_tokens),
-			"dpi": int(dpi),
-			"right_ratio": float(right_ratio),
-			"font_size": int(font_size),
-			"line_spacing": float(line_spacing),
-			"column_padding": int(column_padding),
-			"concurrency": int(concurrency),
-			"rpm_limit": int(rpm_limit),
-			"tpm_budget": int(tpm_budget),
-			"rpd_limit": int(rpd_limit),
-			"user_prompt": user_prompt.strip(),
-			"cjk_font_name": cjk_font_name,
-			"render_mode": render_mode,
-			"use_context": bool(use_context),
-			"context_prompt": context_prompt_text.strip() if use_context else None,
-			"output_mode": output_mode,
-			"screenshot_dpi": screenshot_dpi,
-			"embed_images": embed_images,
-			"markdown_title": markdown_title,
-		}
+	# Markdown模式的参数
+	if output_mode == "Markdown截图讲解":
+		st.subheader("📝 Markdown参数")
+		screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
+		embed_images = st.checkbox("嵌入图片到Markdown", value=False, help="将截图base64编码嵌入markdown文件，否则使用外部图片文件")
+		markdown_title = st.text_input("文档标题", value="PDF文档讲解")
+		html_column_count = 2
+		html_column_gap = 20
+		html_show_column_rule = True
+	elif output_mode == "HTML截图版":
+		st.subheader("🌐 HTML截图版参数")
+		screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
+		html_column_count = st.slider("分栏数量", 1, 3, 2, 1, help="讲解内容的分栏数量，类似Word分栏排版")
+		html_column_gap = st.slider("栏间距(px)", 10, 40, 20, 2, help="分栏之间的间距")
+		html_show_column_rule = st.checkbox("显示栏间分隔线", value=True, help="在分栏之间显示分隔线")
+		markdown_title = st.text_input("文档标题", value="PDF文档讲解")
+		embed_images = True
+	else:
+		screenshot_dpi = 150
+		embed_images = True
+		markdown_title = "PDF文档讲解"
+		html_column_count = 2
+		html_column_gap = 20
+		html_show_column_rule = True
+	
+	st.divider()
+	st.subheader("上下文增强")
+	use_context = st.checkbox("启用前后各1页上下文", value=False, help="启用后，LLM将同时看到前一页、当前页和后一页的内容，提高讲解连贯性。会增加API调用成本。")
+	context_prompt_text = st.text_area("上下文提示词", value="你将看到前一页、当前页和后一页的内容。请结合上下文信息，生成连贯的讲解。当前页是重点讲解页面，你不需要跟我讲上一页、下一页讲了什么。", disabled=not use_context, help="独立的上下文说明提示词，用于指导LLM如何处理多页内容。")
+	
+	return {
+		"api_key": api_key,
+		"model_name": model_name,
+		"temperature": float(temperature),
+		"max_tokens": int(max_tokens),
+		"dpi": int(dpi),
+		"right_ratio": float(right_ratio),
+		"font_size": int(font_size),
+		"line_spacing": float(line_spacing),
+		"column_padding": int(column_padding),
+		"concurrency": int(concurrency),
+		"rpm_limit": int(rpm_limit),
+		"tpm_budget": int(tpm_budget),
+		"rpd_limit": int(rpd_limit),
+		"user_prompt": user_prompt.strip(),
+		"cjk_font_name": cjk_font_name,
+		"render_mode": render_mode,
+		"use_context": bool(use_context),
+		"context_prompt": context_prompt_text.strip() if use_context else None,
+		"output_mode": output_mode,
+		"screenshot_dpi": screenshot_dpi,
+		"embed_images": embed_images,
+		"markdown_title": markdown_title,
+		"html_column_count": html_column_count,
+		"html_column_gap": html_column_gap,
+		"html_show_column_rule": html_show_column_rule,
+	}
 
 
 def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
@@ -165,6 +182,8 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 	
 	if output_mode == "Markdown截图讲解":
 		st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→生成Markdown文档（包含截图）")
+	elif output_mode == "HTML截图版":
+		st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→生成HTML文档（包含截图和多栏布局）")
 	else:
 		st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→合成新PDF（保持向量）")
 	
@@ -217,6 +236,9 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 	# Build ZIP cache
 	if output_mode == "Markdown截图讲解":
 		st.session_state["batch_zip_bytes"] = build_zip_cache_markdown(batch_results)
+	elif output_mode == "HTML截图版":
+		from app.ui_helpers import build_zip_cache_html_screenshot
+		st.session_state["batch_zip_bytes"] = build_zip_cache_html_screenshot(batch_results)
 	else:
 		st.session_state["batch_zip_bytes"] = build_zip_cache_pdf(batch_results)
 	
@@ -392,8 +414,17 @@ def main():
 
 			if download_mode == "打包下载":
 				zip_bytes = st.session_state.get("batch_zip_bytes")
+				output_mode = params.get("output_mode", "PDF讲解版")
+				
+				if output_mode == "HTML截图版":
+					label_text = "📦 下载所有HTML和讲解JSON (ZIP)"
+				elif output_mode == "Markdown截图讲解":
+					label_text = "📦 下载所有Markdown和讲解JSON (ZIP)"
+				else:
+					label_text = "📦 下载所有PDF和讲解JSON (ZIP)"
+				
 				st.download_button(
-					label="📦 下载所有PDF和讲解JSON (ZIP)",
+					label=label_text,
 					data=zip_bytes,
 					file_name=zip_filename,
 					mime="application/zip",
@@ -440,6 +471,38 @@ def main():
 										)
 									except Exception:
 										pass
+						elif params["output_mode"] == "HTML截图版":
+							# HTML截图版模式：下载HTML文件和JSON
+							html_filename = f"{base_name}讲解文档.html"
+							json_filename = f"{base_name}.json"
+
+							col_dl1, col_dl2 = st.columns(2)
+							with col_dl1:
+								if result.get("html_content"):
+									st.download_button(
+										label=f"🌐 {html_filename}",
+										data=result["html_content"],
+										file_name=html_filename,
+										mime="text/html",
+										use_container_width=True,
+										disabled=st.session_state.get("batch_processing", False),
+										key=f"download_html_{filename}"
+									)
+							with col_dl2:
+								if result.get("explanations"):
+									try:
+										json_bytes = json.dumps(result["explanations"], ensure_ascii=False, indent=2).encode("utf-8")
+										st.download_button(
+											label=f"📝 {json_filename}",
+											data=json_bytes,
+											file_name=json_filename,
+											mime="application/json",
+											use_container_width=True,
+											disabled=st.session_state.get("batch_processing", False),
+											key=f"download_json_html_{filename}"
+										)
+									except Exception:
+										pass
 						else:
 							# PDF模式：下载PDF文件和JSON
 							pdf_filename = f"{base_name}讲解版.pdf"
@@ -477,6 +540,8 @@ def main():
 		output_mode = params.get("output_mode", "PDF讲解版")
 		if output_mode == "Markdown截图讲解":
 			st.info("开始批量根据JSON重新生成Markdown文档...")
+		elif output_mode == "HTML截图版":
+			st.info("开始批量根据JSON重新生成HTML文档...")
 		else:
 			st.info("开始批量根据JSON重新生成PDF...")
 
@@ -546,6 +611,54 @@ def main():
 						"status": "failed",
 						"error": str(e)
 					}
+		elif output_mode == "HTML截图版":
+			# HTML截图版模式：手动处理每个文件
+			for pdf_name, pdf_bytes in pdf_data:
+				try:
+					# 找到对应的JSON数据
+					json_filename = os.path.splitext(pdf_name)[0] + ".json"
+					json_content = None
+					for json_name, json_bytes in json_data:
+						if json_name == json_filename:
+							json_content = json.loads(json_bytes.decode('utf-8'))
+							break
+
+					if json_content is None:
+						batch_results[pdf_name] = {
+							"status": "failed",
+							"error": "未找到匹配的JSON文件"
+						}
+						continue
+
+					# 转换键为整数
+					explanations = {int(k): str(v) for k, v in json_content.items()}
+
+					# 生成HTML文档
+					base_name = os.path.splitext(pdf_name)[0]
+					html_content = pdf_processor.generate_html_screenshot_document(
+						src_bytes=pdf_bytes,
+						explanations=explanations,
+						screenshot_dpi=params.get("screenshot_dpi", 150),
+						title=base_name,
+						font_name=params.get("cjk_font_name", "SimHei"),
+						font_size=params.get("font_size", 14),
+						line_spacing=params.get("line_spacing", 1.2),
+						column_count=params.get("html_column_count", 2),
+						column_gap=params.get("html_column_gap", 20),
+						show_column_rule=params.get("html_show_column_rule", True)
+					)
+
+					batch_results[pdf_name] = {
+						"status": "completed",
+						"html_content": html_content,
+						"explanations": explanations
+					}
+
+				except Exception as e:
+					batch_results[pdf_name] = {
+						"status": "failed",
+						"error": str(e)
+					}
 		else:
 			# PDF模式：使用现有的批处理方法
 			batch_results = pdf_processor.batch_recompose_from_json(
@@ -589,6 +702,28 @@ def main():
 										# 在ZIP中创建images目录
 										zip_img_path = f"{base_name}_images/{img_file}"
 										zip_file.write(img_path, zip_img_path)
+				zip_buffer.seek(0)
+				st.session_state["batch_json_zip_bytes"] = zip_buffer.getvalue()
+			else:
+				st.session_state["batch_json_zip_bytes"] = None
+		elif output_mode == "HTML截图版":
+			completed_count = sum(1 for r in batch_results.values() if r["status"] == "completed" and r.get("html_content"))
+			if completed_count > 0:
+				zip_buffer = io.BytesIO()
+				with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+					for filename, result in batch_results.items():
+						if result["status"] == "completed" and result.get("html_content"):
+							base_name = os.path.splitext(filename)[0]
+							html_filename = f"{base_name}讲解文档.html"
+							zip_file.writestr(html_filename, result["html_content"])
+							# 保存JSON
+							if result.get("explanations"):
+								try:
+									json_bytes = json.dumps(result["explanations"], ensure_ascii=False, indent=2).encode("utf-8")
+									json_filename = f"{base_name}.json"
+									zip_file.writestr(json_filename, json_bytes)
+								except Exception:
+									pass
 				zip_buffer.seek(0)
 				st.session_state["batch_json_zip_bytes"] = zip_buffer.getvalue()
 			else:
@@ -705,12 +840,17 @@ def main():
 			if completed_files > 0:
 				if output_mode == "Markdown截图讲解":
 					zip_filename = f"批量JSON重新生成Markdown_{time.strftime('%Y%m%d_%H%M%S')}.zip"
+					button_label = "📦 下载所有成功处理的Markdown文档及图片 (ZIP)"
+				elif output_mode == "HTML截图版":
+					zip_filename = f"批量JSON重新生成HTML_{time.strftime('%Y%m%d_%H%M%S')}.zip"
+					button_label = "📦 下载所有成功处理的HTML文档 (ZIP)"
 				else:
 					zip_filename = f"批量JSON重新生成PDF_{time.strftime('%Y%m%d_%H%M%S')}.zip"
+					button_label = "📦 下载所有成功处理的PDF (ZIP)"
 				zip_bytes = st.session_state.get("batch_json_zip_bytes")
 				st.info("💡 批量处理结果将以压缩包形式下载，包含所有文档和相关图片文件夹")
 				st.download_button(
-					label=f"📦 下载所有成功处理的{'PDF' if output_mode != 'Markdown截图讲解' else 'Markdown文档'}及图片 (ZIP)",
+					label=button_label,
 					data=zip_bytes,
 					file_name=zip_filename,
 					mime="application/zip",
