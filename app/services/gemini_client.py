@@ -59,6 +59,22 @@ def estimate_tokens(chinese_chars: int) -> int:
 class GeminiClient:
 	def __init__(self, api_key: str, model_name: str, temperature: float, max_output_tokens: int,
 				rpm_limit: int, tpm_budget: int, rpd_limit: int, logger=None) -> None:
+		# Validate input parameters
+		if not api_key or not isinstance(api_key, str):
+			raise ValueError("api_key cannot be empty and must be a string")
+		if not model_name or not isinstance(model_name, str):
+			raise ValueError("model_name cannot be empty and must be a string")
+		if not (0.0 <= temperature <= 1.0):
+			raise ValueError(f"temperature must be between 0.0 and 1.0, got {temperature}")
+		if not isinstance(max_output_tokens, int) or max_output_tokens < 1:
+			raise ValueError(f"max_output_tokens must be a positive integer, got {max_output_tokens}")
+		if not isinstance(rpm_limit, int) or rpm_limit < 1:
+			raise ValueError(f"rpm_limit must be a positive integer, got {rpm_limit}")
+		if not isinstance(tpm_budget, int) or tpm_budget < 1:
+			raise ValueError(f"tpm_budget must be a positive integer, got {tpm_budget}")
+		if not isinstance(rpd_limit, int) or rpd_limit < 1:
+			raise ValueError(f"rpd_limit must be a positive integer, got {rpd_limit}")
+		
 		self.llm = ChatGoogleGenerativeAI(
 			model=model_name,
 			api_key=api_key,

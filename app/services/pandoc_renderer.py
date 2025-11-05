@@ -30,7 +30,9 @@ class PandocRenderer:
                 ['pandoc', '--version'],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
+                # 避免命令行输出干扰
+                shell=False
             )
             if result.returncode == 0:
                 # 提取版本号
@@ -52,7 +54,9 @@ class PandocRenderer:
                     [pandoc_path, '--version'],
                     capture_output=True,
                     text=True,
-                    timeout=5
+                    timeout=5,
+                    # 避免命令行输出干扰
+                    shell=False
                 )
                 if result.returncode == 0:
                     # 提取版本号
@@ -112,7 +116,9 @@ class PandocRenderer:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',  # 明确指定 UTF-8 编码
-                timeout=10
+                timeout=10,
+                # 避免命令行输出干扰
+                shell=False
             )
 
             if process.returncode == 0:

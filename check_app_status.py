@@ -33,7 +33,7 @@ def check_app_status():
         import subprocess
         # Windows下检查streamlit进程
         result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq streamlit.exe', '/NH'],
-                              capture_output=True, text=True, shell=True)
+                              capture_output=True, text=True, shell=False)
         if 'streamlit.exe' in result.stdout:
             print("✓ 发现Streamlit进程正在运行")
             streamlit_running = True

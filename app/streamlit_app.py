@@ -5,10 +5,16 @@ import json
 import zipfile
 import hashlib
 import tempfile
-from typing import Optional
+from typing import Optional, Dict, Any, List
 
 import streamlit as st
 from dotenv import load_dotenv
+
+from app.ui_helpers import (
+    StateManager, display_batch_status, validate_file_upload,
+    process_single_file, display_file_result,
+    build_zip_cache_pdf, build_zip_cache_markdown
+)
 
 load_dotenv()
 
@@ -25,211 +31,15 @@ except Exception:
     pass
 
 
-# 创建临时目录用于存储处理结果
-TEMP_DIR = os.path.join(tempfile.gettempdir(), "pdf_processor_cache")
-os.makedirs(TEMP_DIR, exist_ok=True)
-
-
-def get_file_hash(file_bytes: bytes, params: dict) -> str:
-	"""生成基于文件内容和参数的哈希值"""
-	content = file_bytes + json.dumps(params, sort_keys=True).encode('utf-8')
-	return hashlib.md5(content).hexdigest()
-
-
-def save_result_to_file(file_hash: str, result: dict) -> str:
-	"""将处理结果保存到临时文件"""
-	filepath = os.path.join(TEMP_DIR, f"{file_hash}.json")
-	with open(filepath, 'w', encoding='utf-8') as f:
-		# 不保存pdf_bytes到文件，只保存其他信息
-		result_copy = result.copy()
-		result_copy.pop('pdf_bytes', None)
-		json.dump(result_copy, f, ensure_ascii=False, indent=2)
-	return filepath
-
-
-def load_result_from_file(file_hash: str) -> Optional[dict]:
-	"""从临时文件加载处理结果"""
-	filepath = os.path.join(TEMP_DIR, f"{file_hash}.json")
-	if os.path.exists(filepath):
-		try:
-			with open(filepath, 'r', encoding='utf-8') as f:
-				return json.load(f)
-		except:
-			return None
-	return None
-
-
-@st.cache_data
-def cached_process_pdf(src_bytes: bytes, params: dict) -> dict:
-	"""缓存的PDF处理函数"""
-	from app.services import pdf_processor
-
-	file_hash = get_file_hash(src_bytes, params)
-	column_padding = params.get("column_padding", 10)
-
-	# 尝试从缓存文件加载
-	cached_result = load_result_from_file(file_hash)
-	if cached_result and cached_result.get("status") == "completed":
-		# 如果有缓存，需要重新生成PDF bytes（因为bytes不能序列化到JSON）
-		try:
-			result_bytes = pdf_processor.compose_pdf(
-				src_bytes,
-				cached_result["explanations"],
-				params["right_ratio"],
-				params["font_size"],
-				font_path=(params.get("cjk_font_path") or None),
-				render_mode=params.get("render_mode", "markdown"),
-				line_spacing=params["line_spacing"],
-				column_padding=column_padding
-			)
-			cached_result["pdf_bytes"] = result_bytes
-			return cached_result
-		except Exception as e:
-			# 从缓存重新合成PDF失败，返回错误结果
-			return {
-				"status": "failed",
-				"pdf_bytes": None,
-				"explanations": {},
-				"failed_pages": [],
-				"error": f"从缓存重新合成PDF失败: {str(e)}"
-			}
-
-	# 没有缓存或缓存无效，重新处理
-	try:
-		explanations, preview_images, failed_pages = pdf_processor.generate_explanations(
-			src_bytes=src_bytes,
-			api_key=params["api_key"],
-			model_name=params["model_name"],
-			user_prompt=params["user_prompt"],
-			temperature=params["temperature"],
-			max_tokens=params["max_tokens"],
-			dpi=params["dpi"],
-			concurrency=params["concurrency"],
-			rpm_limit=params["rpm_limit"],
-			tpm_budget=params["tpm_budget"],
-			rpd_limit=params["rpd_limit"],
-			use_context=params.get("use_context", False),
-			context_prompt=params.get("context_prompt", None),
-		)
-
-		result_bytes = pdf_processor.compose_pdf(
-			src_bytes,
-			explanations,
-			params["right_ratio"],
-			params["font_size"],
-			font_path=(params.get("cjk_font_path") or None),
-			render_mode=params.get("render_mode", "markdown"),
-			line_spacing=params["line_spacing"],
-			column_padding=column_padding
-		)
-
-		result = {
-			"status": "completed",
-			"pdf_bytes": result_bytes,
-			"explanations": explanations,
-			"failed_pages": failed_pages
-		}
-
-		# 保存到缓存文件
-		save_result_to_file(file_hash, result)
-
-		return result
-
-	except Exception as e:
-		result = {
-			"status": "failed",
-			"pdf_bytes": None,
-			"explanations": {},
-			"failed_pages": [],
-			"error": str(e)
-		}
-		return result
-
-
-@st.cache_data
-def cached_process_markdown(src_bytes: bytes, params: dict) -> dict:
-	"""缓存的markdown处理函数"""
-	from app.services import pdf_processor
-
-	file_hash = get_file_hash(src_bytes, params)
-
-	# 尝试从缓存文件加载
-	cached_result = load_result_from_file(file_hash)
-	if cached_result and cached_result.get("status") == "completed":
-		# 如果有缓存，需要重新生成markdown内容
-		try:
-			markdown_content, explanations, failed_pages, _ = pdf_processor.process_markdown_mode(
-				src_bytes=src_bytes,
-				api_key=params["api_key"],
-				model_name=params["model_name"],
-				user_prompt=params["user_prompt"],
-				temperature=params["temperature"],
-				max_tokens=params["max_tokens"],
-				dpi=params["dpi"],
-				screenshot_dpi=params["screenshot_dpi"],
-				concurrency=params["concurrency"],
-				rpm_limit=params["rpm_limit"],
-				tpm_budget=params["tpm_budget"],
-				rpd_limit=params["rpd_limit"],
-				embed_images=params["embed_images"],
-				title=params["markdown_title"],
-				use_context=params.get("use_context", False),
-				context_prompt=params.get("context_prompt", None),
-			)
-			cached_result["markdown_content"] = markdown_content
-			return cached_result
-		except Exception as e:
-			# 从缓存重新生成markdown失败，返回错误结果
-			return {
-				"status": "failed",
-				"markdown_content": "",
-				"explanations": {},
-				"failed_pages": [],
-				"error": f"从缓存重新生成markdown失败: {str(e)}"
-			}
-
-	# 没有缓存或缓存无效，重新处理
-	try:
-		markdown_content, explanations, failed_pages, _ = pdf_processor.process_markdown_mode(
-			src_bytes=src_bytes,
-			api_key=params["api_key"],
-			model_name=params["model_name"],
-			user_prompt=params["user_prompt"],
-			temperature=params["temperature"],
-			max_tokens=params["max_tokens"],
-			dpi=params["dpi"],
-			screenshot_dpi=params["screenshot_dpi"],
-			concurrency=params["concurrency"],
-			rpm_limit=params["rpm_limit"],
-			tpm_budget=params["tpm_budget"],
-			rpd_limit=params["rpd_limit"],
-			embed_images=params["embed_images"],
-			title=params["markdown_title"],
-			use_context=params.get("use_context", False),
-			context_prompt=params.get("context_prompt", None),
-		)
-
-		result = {
-			"status": "completed",
-			"markdown_content": markdown_content,
-			"explanations": explanations,
-			"failed_pages": failed_pages
-		}
-
-		# 保存到缓存文件
-		save_result_to_file(file_hash, result)
-
-		return result
-
-	except Exception as e:
-		result = {
-			"status": "failed",
-			"markdown_content": "",
-			"explanations": {},
-			"failed_pages": [],
-			"error": str(e)
-		}
-		return result
+# Cache processing functions moved to app/cache_processor.py to avoid circular imports
+from app.cache_processor import (
+	cached_process_pdf,
+	cached_process_markdown,
+	get_file_hash,
+	save_result_to_file,
+	load_result_from_file,
+	TEMP_DIR  # Also export TEMP_DIR for backward compatibility
+)
 
 
 def setup_page():
@@ -255,8 +65,27 @@ def sidebar_form():
 		tpm_budget = st.number_input("TPM 预算(令牌/分钟)", min_value=100000, max_value=20000000, value=2000000, step=100000)
 		rpd_limit = st.number_input("RPD 上限(请求/天)", min_value=100, max_value=100000, value=10000, step=100)
 		user_prompt = st.text_area("讲解风格/要求(系统提示)", value="请用中文讲解本页pdf，关键词给出英文，讲解详尽，语言简洁易懂。讲解让人一看就懂，便于快速学习。请避免不必要的换行，使页面保持紧凑。")
-		cjk_font_path = st.text_input("CJK 字体文件路径(可选)", value="assets/fonts/SIMHEI.TTF")
-		render_mode = st.selectbox("右栏渲染方式", ["text", "markdown"], index=1)
+		# 字体选择下拉框
+		try:
+			from app.services.font_helper import get_windows_cjk_fonts
+			available_fonts = get_windows_cjk_fonts()
+			font_options = [font[0] for font in available_fonts]
+			# 查找 SimHei 的索引，如果没有则使用第一个
+			try:
+				default_index = font_options.index("SimHei")
+			except ValueError:
+				default_index = 0
+			cjk_font_name = st.selectbox("CJK 字体", font_options, index=default_index, 
+			                            help="选择用于显示中文的字体")
+		except Exception as e:
+			st.warning(f"无法检测系统字体，使用默认字体: {e}")
+			cjk_font_name = "SimHei"
+		render_mode = st.selectbox(
+			"右栏渲染方式", 
+			["text", "markdown", "pandoc"], 
+			index=1,
+			help="text: 普通文本模式\nmarkdown: 使用 PyMuPDF 的 htmlbox 渲染 Markdown\npandoc: 使用 Pandoc + LaTeX 生成高质量 PDF（需要安装 Pandoc 和 MiKTeX）"
+		)
 
 		st.divider()
 		st.subheader("输出模式选择")
@@ -297,7 +126,7 @@ def sidebar_form():
 			"tpm_budget": int(tpm_budget),
 			"rpd_limit": int(rpd_limit),
 			"user_prompt": user_prompt.strip(),
-			"cjk_font_path": cjk_font_path.strip(),
+			"cjk_font_name": cjk_font_name,
 			"render_mode": render_mode,
 			"use_context": bool(use_context),
 			"context_prompt": context_prompt_text.strip() if use_context else None,
@@ -308,36 +137,112 @@ def sidebar_form():
 		}
 
 
+def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
+	"""
+	Process multiple files in batch.
+	
+	Args:
+		uploaded_files: List of uploaded files
+		params: Processing parameters
+	"""
+	from app.services import pdf_processor
+	
+	# Validate inputs
+	is_valid, error_msg = validate_file_upload(uploaded_files, params)
+	if not is_valid:
+		st.error(error_msg)
+		if not uploaded_files:
+			st.stop()
+		return
+	
+	# Initialize processing state
+	StateManager.set_processing(True)
+	StateManager.set_batch_results({})
+	st.session_state["batch_zip_bytes"] = None
+	
+	total_files = len(uploaded_files)
+	output_mode = params.get("output_mode", "PDF讲解版")
+	
+	if output_mode == "Markdown截图讲解":
+		st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→生成Markdown文档（包含截图）")
+	else:
+		st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→合成新PDF（保持向量）")
+	
+	# Progress tracking
+	overall_progress = st.progress(0)
+	overall_status = st.empty()
+	
+	# Process each file
+	for i, uploaded_file in enumerate(uploaded_files):
+		filename = uploaded_file.name
+		StateManager.get_batch_results()[filename] = {
+			"status": "processing",
+			"pdf_bytes": None,
+			"explanations": {},
+			"failed_pages": [],
+			"json_bytes": None
+		}
+		
+		# Update progress
+		overall_progress.progress(int((i / total_files) * 100))
+		overall_status.write(f"正在处理文件 {i+1}/{total_files}: {filename}")
+		
+		# Read file bytes and get cache hash
+		uploaded_file.seek(0)  # Reset file pointer in case it was read before
+		src_bytes = uploaded_file.read()
+		file_hash = get_file_hash(src_bytes, params)
+		cached_result = load_result_from_file(file_hash)
+		
+		# Process file (pass bytes directly to avoid file read issues)
+		result = process_single_file(src_bytes, filename, params, file_hash, cached_result)
+		StateManager.get_batch_results()[filename] = result
+		
+		# Display result
+		display_file_result(filename, result)
+	
+	# Complete processing
+	overall_progress.progress(100)
+	overall_status.write("批量处理完成！")
+	
+	# Statistics
+	batch_results = StateManager.get_batch_results()
+	completed = sum(1 for r in batch_results.values() if r.get("status") == "completed")
+	failed = sum(1 for r in batch_results.values() if r.get("status") == "failed")
+	
+	if completed > 0:
+		st.success(f"🎉 批量处理完成！成功: {completed} 个文件，失败: {failed} 个文件")
+	else:
+		st.error("❌ 所有文件处理失败")
+	
+	# Build ZIP cache
+	if output_mode == "Markdown截图讲解":
+		st.session_state["batch_zip_bytes"] = build_zip_cache_markdown(batch_results)
+	else:
+		st.session_state["batch_zip_bytes"] = build_zip_cache_pdf(batch_results)
+	
+	StateManager.set_processing(False)
+
+
 def main():
 	setup_page()
 	params = sidebar_form()
-	column_padding_value = params.get("column_padding", 10)
+	
+	# Initialize state
+	StateManager.initialize()
+	
+	# Display current batch status
+	display_batch_status()
 
-	# 显示当前处理状态
-	batch_results = st.session_state.get("batch_results", {})
-	if batch_results:
-		total_files = len(batch_results)
-		completed_files = sum(1 for r in batch_results.values() if r["status"] == "completed")
-		failed_files = sum(1 for r in batch_results.values() if r["status"] == "failed")
-		processing_files = sum(1 for r in batch_results.values() if r["status"] == "processing")
-
-		if processing_files > 0:
-			st.info(f"🔄 正在处理中... 已完成: {completed_files}/{total_files} 个文件")
-		elif completed_files > 0:
-			st.success(f"✅ 处理完成！成功: {completed_files} 个文件，失败: {failed_files} 个文件")
-		elif failed_files > 0:
-			st.error(f"❌ 处理失败！失败: {failed_files} 个文件")
-
-	# 批量上传模式
+	# Batch file upload
 	uploaded_files = st.file_uploader("上传 PDF 文件 (最多20个)", type=["pdf"], accept_multiple_files=True)
-	if len(uploaded_files) > 20:
+	if uploaded_files and len(uploaded_files) > 20:
 		st.error("最多只能上传20个文件")
 		uploaded_files = uploaded_files[:20]
 		st.warning("已自动截取前20个文件")
 
 	col_run, col_save = st.columns([2, 1])
 
-	# 下载选项
+	# Download options
 	with col_save:
 		st.subheader("下载选项")
 		download_mode = st.radio(
@@ -348,249 +253,11 @@ def main():
 		if download_mode == "打包下载":
 			zip_filename = st.text_input("ZIP文件名", value="批量讲解PDF.zip")
 
-	# 初始化session_state
-	if "batch_results" not in st.session_state:
-		st.session_state["batch_results"] = {}  # {filename: {"pdf_bytes": bytes, "explanations": dict, "status": str, "failed_pages": list}}
-	if "batch_processing" not in st.session_state:
-		st.session_state["batch_processing"] = False
-	if "batch_zip_bytes" not in st.session_state:
-		st.session_state["batch_zip_bytes"] = None
-	if "batch_json_results" not in st.session_state:
-		st.session_state["batch_json_results"] = {}
-	if "batch_json_processing" not in st.session_state:
-		st.session_state["batch_json_processing"] = False
-	if "batch_json_zip_bytes" not in st.session_state:
-		st.session_state["batch_json_zip_bytes"] = None
-
+	# Batch processing button
 	with col_run:
-		if st.button("批量生成讲解与合成", type="primary", use_container_width=True, disabled=st.session_state.get("batch_processing", False)):
-			if not uploaded_files:
-				st.error("请先上传 PDF 文件")
-				st.stop()
-			if not params["api_key"]:
-				st.error("请在侧边栏填写 GEMINI_API_KEY")
-				st.stop()
-
-			st.session_state["batch_processing"] = True
-			st.session_state["batch_results"] = {}
-			st.session_state["batch_zip_bytes"] = None
-
-			total_files = len(uploaded_files)
-			if params["output_mode"] == "Markdown截图讲解":
-				st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→生成Markdown文档（包含截图）")
-			else:
-				st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→合成新PDF（保持向量）")
-
-			# 延后导入以加快首屏
-			from app.services import pdf_processor
-
-			# 整体进度
-			overall_progress = st.progress(0)
-			overall_status = st.empty()
-
-			# 限制同时处理的PDF数量，避免API过载
-			max_concurrent_pdfs = min(5, total_files)  # 最多同时处理5个PDF
-
-			for i, uploaded_file in enumerate(uploaded_files):
-				filename = uploaded_file.name
-				st.session_state["batch_results"][filename] = {"status": "processing", "pdf_bytes": None, "explanations": {}, "failed_pages": [], "json_bytes": None}
-
-				# 更新整体进度
-				overall_progress.progress(int((i / total_files) * 100))
-				overall_status.write(f"正在处理文件 {i+1}/{total_files}: {filename}")
-
-				try:
-					# 读取源PDF bytes
-					src_bytes = uploaded_file.read()
-
-					# 验证PDF文件有效性
-					is_valid, validation_error = pdf_processor.validate_pdf_file(src_bytes)
-					if not is_valid:
-						st.session_state["batch_results"][filename] = {
-							"status": "failed",
-							"pdf_bytes": None,
-							"explanations": {},
-							"failed_pages": [],
-							"error": f"PDF文件验证失败: {validation_error}"
-						}
-						st.error(f"❌ {filename} PDF文件无效: {validation_error}")
-						continue
-
-					# 检查是否有缓存
-					file_hash = get_file_hash(src_bytes, params)
-					cached_result = load_result_from_file(file_hash)
-
-					# 根据输出模式选择处理方式
-					if params["output_mode"] == "Markdown截图讲解":
-						# Markdown模式下的缓存和处理逻辑
-						st.session_state["batch_results"][filename] = {"status": "processing", "markdown_content": "", "explanations": {}, "failed_pages": []}
-
-						if cached_result and cached_result.get("status") == "completed":
-							st.info(f"📋 {filename} 使用缓存结果")
-							# 从缓存加载，需要重新生成markdown
-							try:
-								markdown_content, explanations, failed_pages, _ = pdf_processor.process_markdown_mode(
-									src_bytes=src_bytes,
-									api_key=params["api_key"],
-									model_name=params["model_name"],
-									user_prompt=params["user_prompt"],
-									temperature=params["temperature"],
-									max_tokens=params["max_tokens"],
-									dpi=params["dpi"],
-									screenshot_dpi=params["screenshot_dpi"],
-									concurrency=params["concurrency"],
-									rpm_limit=params["rpm_limit"],
-									tpm_budget=params["tpm_budget"],
-									rpd_limit=params["rpd_limit"],
-									embed_images=params["embed_images"],
-									title=params["markdown_title"],
-									use_context=params.get("use_context", False),
-									context_prompt=params.get("context_prompt", None),
-								)
-								st.session_state["batch_results"][filename] = {
-									"status": "completed",
-									"markdown_content": markdown_content,
-									"explanations": explanations,
-									"failed_pages": failed_pages
-								}
-							except Exception as e:
-								# 缓存重新生成失败，标记为失败并尝试重新处理
-								st.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
-								st.session_state["batch_results"][filename] = {"status": "processing", "markdown_content": "", "explanations": {}, "failed_pages": []}
-								# 继续到下面的重新处理逻辑
-								cached_result = None
-						else:
-							# 需要重新处理
-							with st.spinner(f"处理 {filename} 中..."):
-								result = cached_process_markdown(src_bytes, params)
-								st.session_state["batch_results"][filename] = result
-
-						result = st.session_state["batch_results"][filename]
-						if result["status"] == "completed":
-							st.success(f"✅ {filename} 处理完成！")
-						if result["failed_pages"]:
-							st.warning(f"⚠️ {filename} 中 {len(result['failed_pages'])} 页生成讲解失败")
-						else:
-							st.error(f"❌ {filename} 处理失败: {result.get('error', '未知错误')}")
-					else:
-						# PDF模式下的缓存和处理逻辑
-						if cached_result and cached_result.get("status") == "completed":
-							st.info(f"📋 {filename} 使用缓存结果")
-							# 从缓存加载，需要重新合成PDF
-							try:
-								result_bytes = pdf_processor.compose_pdf(
-									src_bytes,
-									cached_result["explanations"],
-									params["right_ratio"],
-									params["font_size"],
-									font_path=(params.get("cjk_font_path") or None),
-									render_mode=params.get("render_mode", "markdown"),
-									line_spacing=params["line_spacing"],
-									column_padding=column_padding_value
-								)
-								st.session_state["batch_results"][filename] = {
-									"status": "completed",
-									"pdf_bytes": result_bytes,
-									"explanations": cached_result["explanations"],
-									"failed_pages": cached_result["failed_pages"],
-									"json_bytes": None
-								}
-							except Exception as e:
-								# 缓存重新合成失败，标记为失败并尝试重新处理
-								st.warning(f"缓存重新合成失败，尝试重新处理: {str(e)}")
-								st.session_state["batch_results"][filename] = {"status": "processing", "pdf_bytes": None, "explanations": {}, "failed_pages": []}
-								# 继续到下面的重新处理逻辑
-								cached_result = None
-						else:
-							# 需要重新处理
-							with st.spinner(f"处理 {filename} 中..."):
-								result = cached_process_pdf(src_bytes, params)
-								st.session_state["batch_results"][filename] = result
-
-					result = st.session_state["batch_results"][filename]
-					if result["status"] == "completed":
-						st.success(f"✅ {filename} 处理完成！")
-					if result["failed_pages"]:
-						st.warning(f"⚠️ {filename} 中 {len(result['failed_pages'])} 页生成讲解失败")
-					else:
-						st.error(f"❌ {filename} 处理失败: {result.get('error', '未知错误')}")
-
-				except Exception as e:
-					st.session_state["batch_results"][filename] = {
-						"status": "failed",
-						"pdf_bytes": None,
-						"explanations": {},
-						"failed_pages": [],
-						"error": str(e)
-					}
-					st.error(f"❌ {filename} 处理失败: {str(e)}")
-
-			# 完成处理
-			overall_progress.progress(100)
-			overall_status.write("批量处理完成！")
-
-			# 统计结果
-			completed = sum(1 for r in st.session_state["batch_results"].values() if r["status"] == "completed")
-			failed = sum(1 for r in st.session_state["batch_results"].values() if r["status"] == "failed")
-
-			if completed > 0:
-				st.success(f"🎉 批量处理完成！成功: {completed} 个文件，失败: {failed} 个文件")
-			else:
-				st.error("❌ 所有文件处理失败")
-
-			# 根据输出模式处理下载缓存
-			if params["output_mode"] == "Markdown截图讲解":
-				# Markdown模式的下载缓存
-				# 仅当存在成功项时构建ZIP
-				completed_any = any(r.get("status") == "completed" and r.get("markdown_content") for r in st.session_state["batch_results"].values())
-				if completed_any:
-					zip_buffer = io.BytesIO()
-					with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-						for fname, res in st.session_state["batch_results"].items():
-							if res.get("status") == "completed" and res.get("markdown_content"):
-								base_name = os.path.splitext(fname)[0]
-								markdown_filename = f"{base_name}讲解文档.md"
-								zip_file.writestr(markdown_filename, res["markdown_content"])
-								# 如果有explanations，也保存为JSON
-								if res.get("explanations"):
-									try:
-										json_bytes = json.dumps(res["explanations"], ensure_ascii=False, indent=2).encode("utf-8")
-										json_filename = f"{base_name}.json"
-										zip_file.writestr(json_filename, json_bytes)
-									except Exception:
-										pass
-					zip_buffer.seek(0)
-					st.session_state["batch_zip_bytes"] = zip_buffer.getvalue()
-				else:
-					st.session_state["batch_zip_bytes"] = None
-			else:
-				# PDF模式的下载缓存
-				# 预生成每个文件的 json_bytes，并构建ZIP缓存
-				for fname, res in st.session_state["batch_results"].items():
-					if res.get("status") == "completed" and res.get("explanations"):
-						try:
-							res["json_bytes"] = json.dumps(res["explanations"], ensure_ascii=False, indent=2).encode("utf-8")
-						except Exception:
-							res["json_bytes"] = None
-				# 仅当存在成功项时构建ZIP
-				completed_any = any(r.get("status") == "completed" and r.get("pdf_bytes") for r in st.session_state["batch_results"].values())
-				if completed_any:
-					zip_buffer = io.BytesIO()
-					with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-						for fname, res in st.session_state["batch_results"].items():
-							if res.get("status") == "completed" and res.get("pdf_bytes"):
-								base_name = os.path.splitext(fname)[0]
-								new_filename = f"{base_name}讲解版.pdf"
-								zip_file.writestr(new_filename, res["pdf_bytes"])
-								if res.get("json_bytes"):
-									json_filename = f"{base_name}.json"
-									zip_file.writestr(json_filename, res["json_bytes"])
-					zip_buffer.seek(0)
-					st.session_state["batch_zip_bytes"] = zip_buffer.getvalue()
-				else:
-					st.session_state["batch_zip_bytes"] = None
-
-			st.session_state["batch_processing"] = False
+		if st.button("批量生成讲解与合成", type="primary", use_container_width=True, disabled=StateManager.is_processing()):
+			if uploaded_files:
+				batch_process_files(uploaded_files, params)
 
 	with col_save:
 		# 显示批量处理结果
@@ -685,10 +352,10 @@ def main():
 										explanations,
 										params["right_ratio"],
 										params["font_size"],
-										font_path=(params.get("cjk_font_path") or None),
+										font_name=(params.get("cjk_font_name") or "SimHei"),
 										render_mode=params.get("render_mode", "markdown"),
 										line_spacing=params["line_spacing"],
-										column_padding=column_padding_value
+										column_padding=params.get("column_padding", 10)
 									)
 
 								st.session_state["batch_results"][filename] = {
@@ -886,10 +553,10 @@ def main():
 				json_data,
 				params["right_ratio"],
 				params["font_size"],
-				font_path=(params.get("cjk_font_path") or None),
+				font_name=(params.get("cjk_font_name") or "SimHei"),
 				render_mode=params.get("render_mode", "markdown"),
 				line_spacing=params["line_spacing"],
-				column_padding=column_padding_value
+				column_padding=params.get("column_padding", 10)
 			)
 
 		st.session_state["batch_json_results"] = batch_results
@@ -1041,8 +708,9 @@ def main():
 				else:
 					zip_filename = f"批量JSON重新生成PDF_{time.strftime('%Y%m%d_%H%M%S')}.zip"
 				zip_bytes = st.session_state.get("batch_json_zip_bytes")
+				st.info("💡 批量处理结果将以压缩包形式下载，包含所有文档和相关图片文件夹")
 				st.download_button(
-					label=f"📦 下载所有成功处理的{'PDF' if output_mode != 'Markdown截图讲解' else 'Markdown文档'} (ZIP)",
+					label=f"📦 下载所有成功处理的{'PDF' if output_mode != 'Markdown截图讲解' else 'Markdown文档'}及图片 (ZIP)",
 					data=zip_bytes,
 					file_name=zip_filename,
 					mime="application/zip",
@@ -1050,42 +718,12 @@ def main():
 					key="batch_json_zip_download",
 					disabled=st.session_state.get("batch_json_processing", False) or not bool(zip_bytes)
 				)
-			st.write("**分别下载每个成功处理的文件：**")
-			for filename, result in batch_json_results.items():
-				if result["status"] == "completed":
-					base_name = os.path.splitext(filename)[0]
-					if output_mode == "Markdown截图讲解" and result.get("markdown_content"):
-						# Markdown模式：下载markdown文件和JSON
-						markdown_filename = f"{base_name}讲解文档.md"
-						col_dl1, col_dl2 = st.columns([3, 1])
-						with col_dl1:
-							st.write(f"📄 {markdown_filename}")
-						with col_dl2:
-							st.download_button(
-								label="下载",
-								data=result["markdown_content"],
-								file_name=markdown_filename,
-								mime="text/markdown",
-								key=f"batch_json_md_{filename}",
-								disabled=st.session_state.get("batch_json_processing", False)
-							)
-					elif output_mode != "Markdown截图讲解" and result.get("pdf_bytes"):
-						# PDF模式：下载PDF文件
-						pdf_filename = f"{base_name}讲解版.pdf"
-						col_dl1, col_dl2 = st.columns([3, 1])
-						with col_dl1:
-							st.write(f"📄 {pdf_filename}")
-						with col_dl2:
-							st.download_button(
-								label="下载",
-								data=result["pdf_bytes"],
-								file_name=pdf_filename,
-								mime="application/pdf",
-								key=f"batch_json_pdf_{filename}",
-								disabled=st.session_state.get("batch_json_processing", False)
-							)
-				elif result["status"] == "failed":
-					# 显示失败的文件及其错误信息
+			
+			# 显示处理失败的文件信息
+			failed_results = {filename: result for filename, result in batch_json_results.items() if result["status"] == "failed"}
+			if failed_results:
+				st.write("**处理失败的文件：**")
+				for filename, result in failed_results.items():
 					st.error(f"❌ {filename} 处理失败: {result.get('error', '未知错误')}")
 
 

@@ -201,7 +201,7 @@ async def test_markdown_generation():
                         # 调用系统命令检查日志更新
                         import subprocess
                         result = subprocess.run(['powershell', '-Command', 'Get-Content -Path logs/app.log -Tail 5'],
-                                              capture_output=True, text=True, encoding='utf-8')
+                                              capture_output=True, text=True, encoding='utf-8', shell=False)
                         if result.returncode == 0:
                             recent_logs = result.stdout.strip()
                             print("最近的日志记录:")
