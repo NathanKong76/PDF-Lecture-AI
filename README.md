@@ -1,3 +1,4 @@
+推荐使用HTML-pdf2htmlEX版，排版几乎完美，支持手机和电脑端浏览器使用。但是要安装pdf2htmlEX
 # PDF 讲解流 · Gemini 2.5 Pro
 
 一个基于 Streamlit 的本地应用：批量读取 PDF，逐页调用 Google Gemini 生成中文讲解，支持多种输出格式（PDF讲解版、Markdown截图讲解、HTML截图版、HTML-pdf2htmlEX版）。支持批量下载、讲解 JSON 导出/导入与仅合成模式。
