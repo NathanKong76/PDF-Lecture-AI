@@ -535,59 +535,70 @@ class HTMLPdf2htmlEXGenerator:
         
         # pdf2htmlEX容器特定的CSS样式
         pdf2htmlex_container_css = """
-/* pdf2htmlEX 容器特定样式 */
-.pdf2htmlex-container {
-    width: 100%;                    /* 宽度占满父容器 */
-    height: 100%;                    /* 高度占满父容器 */
-    overflow: visible;               /* 允许内容溢出显示 */
-    display: flex;                   /* 使用弹性布局 */
-    flex-direction: column;          /* 垂直方向排列（从上到下） */
-    align-items: flex-start;         /* 左对齐放置每一页 */
-    justify-content: flex-start;     /* 垂直方向从顶部开始堆叠 */
-    padding: 0;                      /* 无内边距，避免额外空白 */
-}
+        /* pdf2htmlEX 容器特定样式 */
+        .pdf2htmlex-container {
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: flex-start;
+        padding: 0;
+        }
 
-/* PDF 页面外层容器样式 */
-.pdf2htmlex-container .pdf2htmlex-page {
-    margin: 0 auto 0px auto;         /* 居中显示每个页面 */
-    background: white;               /* 白色背景 */
-    border-radius: 4px;              /* 圆角4px，柔和边角 */
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);  /* 轻微阴影效果 */
-    overflow: visible;               /* 允许内容溢出 */
-    transition: all 0.3s ease;       /* 所有属性变化都有0.3秒平滑过渡 */
-    position: relative;              /* 相对定位，用于内部绝对定位元素的参考 */
-    transform-origin: top center;    /* 缩放变换的原点：顶部中心 */
-    display: block;                  /* 块级元素，便于margin自动居中 */
-}
 
-/* 当前激活页面的样式（滚动到视口时高亮显示） */
-.pdf2htmlex-container .pdf2htmlex-page.active {
-    box-shadow: 0 8px 32px rgba(52, 152, 219, 0.6);  /* 更明显的蓝色阴影，突出当前页 */
-}
+        /* PDF 页面外层容器样式 */
+        .pdf2htmlex-container .pdf2htmlex-page {
+        margin: 0 auto 0px auto;
+        background: white;
+        border-radius: 4px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+        padding: 0; /* 重要：由 JS 统一设置动态 padding，避免双重 padding */
+        overflow: visible;
+        transition: all 0.3s ease;
+        position: relative;
+        transform-origin: top left; /* 重要：统一从左上角缩放 */
+        display: block;
+        box-sizing: content-box; /* width/height 为内容尺寸，不含 padding */
+        }
 
-/* 页面编号标签样式（显示"第 X 页"的蓝色标签） */
-.pdf2htmlex-page-badge {
-    position: absolute;               /* 绝对定位，相对于父容器（PDF页面） */
-    top: 10px;                       /* 距离顶部10px */
-    left: 10px;                      /* 距离左边10px */
-    background: rgba(52, 152, 219, 0.6);  /* 蓝色半透明背景（90%不透明度） */
-    color: white;                    /* 白色文字 */
-    padding: 8px 16px;               /* 内边距：上下8px，左右16px */
-    border-radius: 20px;            /* 圆角20px，形成胶囊形状 */
-    font-weight: bold;               /* 粗体文字 */
-    font-size: 12pt;                /* 字体大小12pt */
-    z-index: 10;                     /* 层级为10，确保显示在PDF内容之上 */
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);  /* 轻微阴影，增加立体感 */
-}
-"""
-        
-        # 覆盖截图面板的内边距样式，与HTML截图版保持一致
+
+        /* 当前激活页面的样式（滚动到视口时高亮显示） */
+        .pdf2htmlex-container .pdf2htmlex-page.active {
+        box-shadow: 0 8px 32px rgba(52, 152, 219, 0.6);
+        }
+
+
+        /* 页面编号标签样式（显示"第 X 页"的蓝色标签） */
+        .pdf2htmlex-page-badge {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(52, 152, 219, 0.6);
+        color: white;
+        padding: 8px 16px;
+        border-radius: 20px;
+        font-weight: bold;
+        font-size: 12pt;
+        z-index: 10;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+
+
+        /* 提升渲染稳定性，减少缩放抖动 */
+        .pdf2htmlex-container .pf { will-change: transform; }
+        """
+
+
+        # 2) 替换 screenshots_panel_override 字符串：
         screenshots_panel_override = """
-/* 覆盖截图面板的内边距 - 与HTML截图版保持一致 */
-.screenshots-panel {
-    padding: 5px !important;          /* 四周各5px内边距，使用!important确保优先级 */
-}
-"""
+        /* 覆盖截图面板的内边距与滚动 - 与HTML截图版保持一致 */
+        .screenshots-panel {
+        padding: 5px !important;
+        overflow: auto; /* 重要：防止右下被硬裁切 */
+        }
+        """
         
         # 合并所有CSS样式：基础样式 + pdf2htmlEX隔离样式 + 容器样式 + 面板覆盖样式
         combined_css = base_css + '\n' + isolated_pdf2htmlex_css + '\n' + pdf2htmlex_container_css + '\n' + screenshots_panel_override
@@ -725,448 +736,249 @@ class HTMLPdf2htmlEXGenerator:
     
     @staticmethod
     def _generate_javascript_for_pdf2htmlex(total_pages: int) -> str:
-        """
-        生成pdf2htmlEX视图的JavaScript代码
-        从HTML截图版适配而来，处理pdf2htmlEX页面的布局和交互
-        
-        Args:
-            total_pages: PDF总页数
-            
-        Returns:
-            JavaScript代码字符串
-        """
         js = f"""
-// HTML pdf2htmlEX 视图同步类 - 适配pdf2htmlEX页面
-// 负责处理：页面缩放、左右同步滚动、导航控制、主题切换等功能
-class Pdf2htmlEXExplanationSync {{
-    constructor() {{
-        this.currentPage = 1;              // 当前显示的页码（从1开始）
-        this.totalPages = {total_pages};    // PDF总页数
-        this.observer = null;              // IntersectionObserver实例，用于检测页面进入视口
-        this.fontControlsVisible = false;  // 字体控制面板是否可见
-        this.pageScrollPositions = {{}};    // 存储每个页面在讲解面板中的滚动位置
-        this.init();
-    }}
-    
-    // 初始化所有功能模块
-    init() {{
-        // 隐藏加载指示器
-        const loading = document.querySelector('.loading');
-        if (loading) {{
-            setTimeout(() => loading.remove(), 500);
+    // HTML pdf2htmlEX 视图同步类 - 适配pdf2htmlEX页面
+    class Pdf2htmlEXExplanationSync {{
+        constructor() {{
+            this.currentPage = 1;
+            this.totalPages = {total_pages};
+            this.observer = null;
+            this.fontControlsVisible = false;
+            this.pageScrollPositions = {{}};
+            this.init();
         }}
-        
-        // 加载本地存储的设置（主题、字体大小、行距）
-        this.loadSettings();
-        // 计算并应用PDF页面的缩放比例
-        this.scalePdf2htmlexPages();
-        // 设置IntersectionObserver，监听页面进入视口
-        this.setupObserver();
-        // 设置导航控制（按钮点击、键盘快捷键）
-        this.setupControls();
-        // 设置阅读进度条（跟踪右侧讲解面板的滚动）
-        this.setupReadingProgress();
-        // 设置主题切换功能（明暗模式）
-        this.setupThemeToggle();
-        // 设置字体控制面板（字体大小、行距滑块）
-        this.setupFontControls();
-        // 显示第一页的讲解内容
-        this.showExplanation(1);
-        
-        // 监听窗口大小变化，重新计算页面缩放
-        window.addEventListener('resize', () => this.scalePdf2htmlexPages());
-    }}
-    
-    // 从本地存储加载用户设置（主题、字体大小、行距）
-    loadSettings() {{
-        // 加载主题设置
-        const savedTheme = localStorage.getItem('html-pdf2htmlex-theme');
-        if (savedTheme === 'dark') {{
-            document.body.classList.add('dark-mode');
+
+        init() {{
+            const loading = document.querySelector('.loading');
+            if (loading) {{ setTimeout(() => loading.remove(), 500); }}
+            this.loadSettings();
+            this.scalePdf2htmlexPages();
+            this.setupObserver();
+            this.setupControls();
+            this.setupReadingProgress();
+            this.setupThemeToggle();
+            this.setupFontControls();
+            this.showExplanation(1);
+            window.addEventListener('resize', () => this.scalePdf2htmlexPages());
         }}
-        
-        // 加载字体大小设置
-        const savedFontSize = localStorage.getItem('html-pdf2htmlex-font-size');
-        if (savedFontSize) {{
-            document.documentElement.style.setProperty('--font-size', savedFontSize + 'pt');
+
+        loadSettings() {{
+            const savedTheme = localStorage.getItem('html-pdf2htmlex-theme');
+            if (savedTheme === 'dark') document.body.classList.add('dark-mode');
+            const s1 = localStorage.getItem('html-pdf2htmlex-font-size');
+            if (s1) document.documentElement.style.setProperty('--font-size', s1 + 'pt');
+            const s2 = localStorage.getItem('html-pdf2htmlex-line-height');
+            if (s2) document.documentElement.style.setProperty('--line-height', s2);
         }}
-        
-        // 加载行距设置
-        const savedLineHeight = localStorage.getItem('html-pdf2htmlex-line-height');
-        if (savedLineHeight) {{
-            document.documentElement.style.setProperty('--line-height', savedLineHeight);
-        }}
-    }}
-    
-    // 核心布局函数：计算并应用PDF页面的缩放比例
-    // 使PDF页面充分利用左侧面板的可用空间，同时保持合适的显示大小
-    scalePdf2htmlexPages() {{
-        // 获取左侧PDF面板容器
-        const container = document.querySelector('.screenshots-panel');
-        // 获取所有PDF页面元素（.pf是pdf2htmlEX生成的页面类名）
-        const pages = document.querySelectorAll('.pdf2htmlex-container .pdf2htmlex-page');
-        
-        if (!container || !pages.length) return;
-        
-        // 精确计算可用宽度：容器宽度减去左右内边距
-        const containerPadding = 0; // 左右各0px内边距（已通过CSS设置）
-        const containerWidth = container.clientWidth - containerPadding;
-        
-        // 遍历每个PDF页面，计算并应用缩放
-        pages.forEach(page => {{
-            // 重置transform，获取页面的原始尺寸
-            const originalPage = page.querySelector('.pf');
-            page.style.transform = '';
-            page.style.width = '';
-            page.style.height = '';
-            if (originalPage) {{
-                originalPage.style.transform = '';
-                originalPage.style.transformOrigin = 'top left';
-            }}
-            
-            // 获取页面的原始宽度（scrollWidth优先，fallback到offsetWidth）
-            const pageWidth = originalPage
-                ? (originalPage.scrollWidth || originalPage.offsetWidth)
-                : (page.scrollWidth || page.offsetWidth);
-            const pageHeight = originalPage
-                ? (originalPage.scrollHeight || originalPage.offsetHeight)
-                : (page.scrollHeight || page.offsetHeight);
-            if (!pageWidth) {{
-                return;
-            }}
-            
-            // 计算缩放比例：可用宽度 / 页面原始宽度
-            const rawScale = containerWidth / pageWidth;
-            // 限制缩放范围：最小0.3倍（避免过度缩小），最大1.2倍（避免过度放大）
-            const scale = Math.min(Math.max(rawScale, 0.3), 1.2);
-            
-            // 应用缩放：优先缩放pdf2htmlEX的原始页面，以保持布局宽度一致
-            if (originalPage) {{
-                page.style.width = `${{pageWidth * scale}}px`;
-                if (pageHeight) {{
-                    page.style.height = `${{pageHeight * scale}}px`;
+
+        // —— 关键修复：按“真实绘制尺寸”回填外层宽高，消除亚像素误差 ——
+        scalePdf2htmlexPages() {{
+            const container = document.querySelector('.screenshots-panel');
+            const pages = document.querySelectorAll('.pdf2htmlex-container .pdf2htmlex-page');
+            if (!container || !pages.length) return;
+
+            const containerWidth = container.clientWidth; // 内边距在 CSS 已统一
+            // 动态 padding：避免紧贴边
+            const dynamicPadding = Math.min(Math.max(Math.round(containerWidth * 0.03), 6), 24);
+            const availableWidth = Math.max(containerWidth - dynamicPadding * 2, containerWidth * 0.5);
+
+            pages.forEach(page => {{
+                const originalPage = page.querySelector('.pf');
+
+                // 清理旧状态
+                page.style.transform = '';
+                page.style.width = '';
+                page.style.height = '';
+                page.style.padding = dynamicPadding + 'px'; // 只保留这一处 padding
+
+                if (originalPage) {{
+                    originalPage.style.transform = '';
+                    originalPage.style.transformOrigin = 'top left';
                 }}
-                originalPage.style.transform = `scale(${{scale}})`;
-            }} else {{
-                page.style.width = `${{pageWidth * scale}}px`;
-                if (pageHeight) {{
-                    page.style.height = `${{pageHeight * scale}}px`;
+
+                // 原始尺寸（未缩放）
+                const pageWidth  = originalPage ? (originalPage.scrollWidth  || originalPage.offsetWidth)  : (page.scrollWidth  || page.offsetWidth);
+                const pageHeight = originalPage ? (originalPage.scrollHeight || originalPage.offsetHeight) : (page.scrollHeight || page.offsetHeight);
+                if (!pageWidth) return;
+
+                const rawScale = availableWidth / pageWidth;
+                const scale = Math.min(Math.max(rawScale, 0.3), 1.2);
+
+                if (originalPage) {{
+                    originalPage.style.transform = `translateZ(0) scale(${{scale}})`;
+                    originalPage.style.transformOrigin = 'top left';
+
+                    // 关键：读取缩放后的真实绘制尺寸
+                    const rect = originalPage.getBoundingClientRect();
+                    const scaledW = Math.ceil(rect.width) + 1;   // +1 兜底，防 1px 裁切
+                    const scaledH = Math.ceil(rect.height) + 1;
+                    page.style.width  = scaledW + 'px';
+                    page.style.height = scaledH + 'px';
+                }} else {{
+                    // 极少数兜底：直接缩放外层
+                    page.style.transformOrigin = 'top left';
+                    page.style.transform = `translateZ(0) scale(${{scale}})`;
+                    page.style.width  = Math.ceil(pageWidth  * scale) + 1 + 'px';
+                    page.style.height = Math.ceil(pageHeight * scale) + 1 + 'px';
                 }}
-                page.style.transform = `scale(${{scale}})`;
-                page.style.transformOrigin = 'top center';
-            }}
-            
-            // 页面间距由CSS中的margin-bottom控制，无需在这里设置
-        }});
-    }}
-    
-    // 设置阅读进度条：跟踪右侧讲解面板的滚动进度
-    setupReadingProgress() {{
-        const explanationsPanel = document.querySelector('.explanations-panel');
-        if (!explanationsPanel) return;
-        
-        // 使用节流机制（throttle），避免频繁更新进度条
-        let ticking = false;
-        explanationsPanel.addEventListener('scroll', () => {{
-            if (!ticking) {{
-                window.requestAnimationFrame(() => {{
-                    // 计算滚动进度百分比
-                    const scrollTop = explanationsPanel.scrollTop;  // 当前滚动位置
-                    const scrollHeight = explanationsPanel.scrollHeight - explanationsPanel.clientHeight;  // 可滚动总高度
-                    const progress = (scrollTop / scrollHeight) * 100;
-                    
-                    // 更新顶部进度条的宽度
-                    const progressBar = document.querySelector('.reading-progress');
-                    if (progressBar) {{
-                        progressBar.style.width = Math.min(progress, 100) + '%';
-                    }}
-                    
-                    ticking = false;
-                }});
-                ticking = true;
-            }}
-        }});
-    }}
-    
-    // 设置主题切换功能：在明暗模式之间切换
-    setupThemeToggle() {{
-        const themeToggle = document.querySelector('.theme-toggle');
-        if (!themeToggle) return;
-        
-        // 初始化主题图标
-        this.updateThemeIcon();
-        
-        // 绑定点击事件：切换主题并保存到本地存储
-        themeToggle.addEventListener('click', () => {{
-            document.body.classList.toggle('dark-mode');
-            const isDark = document.body.classList.contains('dark-mode');
-            localStorage.setItem('html-pdf2htmlex-theme', isDark ? 'dark' : 'light');
-            this.updateThemeIcon();
-        }});
-    }}
-    
-    // 更新主题切换按钮的图标：根据当前主题显示太阳或月亮图标
-    updateThemeIcon() {{
-        const themeToggle = document.querySelector('.theme-toggle');
-        if (!themeToggle) return;
-        
-        const isDark = document.body.classList.contains('dark-mode');
-        themeToggle.textContent = isDark ? '☀️' : '🌙';
-        themeToggle.title = isDark ? 'Switch to light mode' : 'Switch to dark mode';
-    }}
-    
-    // 设置字体控制面板：字体大小和行距滑块
-    setupFontControls() {{
-        const toggle = document.querySelector('.font-controls-toggle');
-        const panel = document.querySelector('.font-controls');
-        const fontSizeSlider = document.getElementById('font-size-slider');
-        const lineHeightSlider = document.getElementById('line-height-slider');
-        
-        if (!toggle || !panel) return;
-        
-        // 绑定字体控制面板的显示/隐藏切换
-        toggle.addEventListener('click', () => {{
-            this.fontControlsVisible = !this.fontControlsVisible;
-            panel.classList.toggle('visible', this.fontControlsVisible);
-        }});
-        
-        // 设置字体大小滑块
-        if (fontSizeSlider) {{
-            // 从本地存储加载保存的字体大小，默认为16pt
-            const savedFontSize = localStorage.getItem('html-pdf2htmlex-font-size') || '16';
-            fontSizeSlider.value = savedFontSize;
-            document.getElementById('font-size-value').textContent = savedFontSize + 'pt';
-            
-            // 监听滑块变化，实时更新字体大小并保存到本地存储
-            fontSizeSlider.addEventListener('input', (e) => {{
-                const value = e.target.value;
-                document.documentElement.style.setProperty('--font-size', value + 'pt');
-                document.getElementById('font-size-value').textContent = value + 'pt';
-                localStorage.setItem('html-pdf2htmlex-font-size', value);
             }});
         }}
-        
-        // 设置行距滑块
-        if (lineHeightSlider) {{
-            // 从本地存储加载保存的行距，默认为1.8
-            const savedLineHeight = localStorage.getItem('html-pdf2htmlex-line-height') || '1.8';
-            lineHeightSlider.value = savedLineHeight;
-            document.getElementById('line-height-value').textContent = savedLineHeight;
-            
-            // 监听滑块变化，实时更新行距并保存到本地存储
-            lineHeightSlider.addEventListener('input', (e) => {{
-                const value = e.target.value;
-                document.documentElement.style.setProperty('--line-height', value);
-                document.getElementById('line-height-value').textContent = value;
-                localStorage.setItem('html-pdf2htmlex-line-height', value);
-            }});
-        }}
-    }}
-    
-    // 设置IntersectionObserver：监听PDF页面进入视口，自动同步显示对应的讲解内容
-    setupObserver() {{
-        // 配置观察器选项
-        const options = {{
-            root: document.querySelector('.screenshots-panel'),  // 观察的根元素（左侧PDF面板）
-            rootMargin: '-20% 0px -20% 0px',                      // 顶部和底部各缩小20%的视口区域
-            threshold: 0.5                                        // 当页面50%进入视口时触发
-        }};
-        
-        // 创建IntersectionObserver实例
-        this.observer = new IntersectionObserver((entries) => {{
-            entries.forEach(entry => {{
-                // 当页面进入视口时
-                if (entry.isIntersecting) {{
-                    // 获取页面编号并显示对应的讲解内容
-                    const pageNum = parseInt(entry.target.dataset.page);
-                    this.showExplanation(pageNum);
-                    
-                    // 移除所有页面的active类，然后给当前页面添加active类（高亮显示）
-                    document.querySelectorAll('.pdf2htmlex-page').forEach(el => {{
-                        el.classList.remove('active');
+
+        setupReadingProgress() {{
+            const explanationsPanel = document.querySelector('.explanations-panel');
+            if (!explanationsPanel) return;
+            let ticking = false;
+            explanationsPanel.addEventListener('scroll', () => {{
+                if (!ticking) {{
+                    window.requestAnimationFrame(() => {{
+                        const h = explanationsPanel.scrollHeight - explanationsPanel.clientHeight;
+                        const progress = (explanationsPanel.scrollTop / h) * 100;
+                        const bar = document.querySelector('.reading-progress');
+                        if (bar) bar.style.width = Math.min(progress, 100) + '%';
+                        ticking = false;
                     }});
-                    entry.target.classList.add('active');
+                    ticking = true;
                 }}
             }});
-        }}, options);
-        
-        // 开始观察所有PDF页面元素
-        document.querySelectorAll('.pdf2htmlex-page').forEach(el => {{
-            this.observer.observe(el);
-        }});
-    }}
-    
-    // 设置导航控制：按钮点击和键盘快捷键
-    setupControls() {{
-        // 获取上一页/下一页按钮
-        const prevBtn = document.getElementById('prev-btn');
-        const nextBtn = document.getElementById('next-btn');
-        
-        // 绑定按钮点击事件
-        if (prevBtn) {{
-            prevBtn.addEventListener('click', () => this.goToPrevPage());
         }}
-        
-        if (nextBtn) {{
-            nextBtn.addEventListener('click', () => this.goToNextPage());
-        }}
-        
-        // 绑定键盘快捷键
-        document.addEventListener('keydown', (e) => {{
-            // 如果焦点在输入框或文本域中，不拦截按键
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {{
-                return;
-            }}
-            
-            switch(e.key) {{
-                case 'ArrowUp':      // 上箭头键
-                case 'ArrowLeft':    // 左箭头键
-                    e.preventDefault();
-                    this.goToPrevPage();
-                    break;
-                case 'ArrowDown':    // 下箭头键
-                case 'ArrowRight':   // 右箭头键
-                case ' ':           // 空格键
-                    e.preventDefault();
-                    this.goToNextPage();
-                    break;
-                case 'Home':        // Home键：跳转到第一页
-                    e.preventDefault();
-                    this.goToPage(1);
-                    break;
-                case 'End':         // End键：跳转到最后一页
-                    e.preventDefault();
-                    this.goToPage(this.totalPages);
-                    break;
-            }}
-        }});
-        
-        // 设置右侧讲解面板的滚动行为为平滑滚动
-        const explanationsPanel = document.querySelector('.explanations-panel');
-        if (explanationsPanel) {{
-            explanationsPanel.style.scrollBehavior = 'smooth';
-        }}
-    }}
-    
-    // 显示指定页码的讲解内容（核心同步函数）
-    showExplanation(pageNum) {{
-        // 验证页码有效性
-        if (pageNum < 1 || pageNum > this.totalPages) {{
-            return;
-        }}
-        
-        const explanationsPanel = document.querySelector('.explanations-panel');
-        // 保存当前页面在讲解面板中的滚动位置
-        if (explanationsPanel && this.currentPage) {{
-            this.pageScrollPositions[this.currentPage] = explanationsPanel.scrollTop;
-        }}
-        
-        // 更新当前页码
-        this.currentPage = pageNum;
-        
-        // 隐藏所有讲解项，只显示当前页的讲解
-        document.querySelectorAll('.explanation-item').forEach(el => {{
-            el.classList.remove('active');
-        }});
-        
-        // 显示当前页的讲解内容
-        const targetExplanation = document.getElementById(`explanation-${{pageNum}}`);
-        if (targetExplanation) {{
-            targetExplanation.classList.add('active');
-        }}
-        
-        // 恢复讲解面板的滚动位置（如果之前访问过该页）
-        if (explanationsPanel) {{
-            const originalBehavior = explanationsPanel.style.scrollBehavior;
-            explanationsPanel.style.scrollBehavior = 'auto';  // 临时禁用平滑滚动
-            
-            if (this.pageScrollPositions[pageNum] !== undefined) {{
-                // 恢复之前保存的滚动位置
-                explanationsPanel.scrollTop = this.pageScrollPositions[pageNum];
-            }} else {{
-                // 首次访问该页，滚动到顶部
-                explanationsPanel.scrollTop = 0;
-            }}
-            
-            // 恢复平滑滚动行为
-            setTimeout(() => {{
-                explanationsPanel.style.scrollBehavior = originalBehavior;
-            }}, 0);
-        }}
-        
-        // 更新顶部标题栏的页码指示器
-        const indicator = document.querySelector('.current-page-indicator');
-        if (indicator) {{
-            indicator.textContent = `第 ${{pageNum}} 页 / 共 ${{this.totalPages}} 页`;
-        }}
-        
-        // 更新底部导航栏的页码显示
-        const pageInfo = document.querySelector('.page-info');
-        if (pageInfo) {{
-            pageInfo.textContent = `${{pageNum}} / ${{this.totalPages}}`;
-        }}
-        
-        // 更新按钮状态（禁用/启用上一页/下一页按钮）
-        this.updateButtons();
-        // 更新浏览器标签页标题
-        document.title = `第${{pageNum}}页 - HTML-pdf2htmlEX版`;
-    }}
-    
-    // 跳转到指定页码：平滑滚动左侧PDF面板，使目标页面居中显示
-    goToPage(pageNum) {{
-        // 验证页码有效性
-        if (pageNum < 1 || pageNum > this.totalPages) {{
-            return;
-        }}
-        
-        // 获取目标页面元素并滚动到视口中心
-        const screenshot = document.getElementById(`page-${{pageNum}}`);
-        if (screenshot) {{
-            screenshot.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-        }}
-    }}
-    
-    // 跳转到上一页
-    goToPrevPage() {{
-        if (this.currentPage > 1) {{
-            this.goToPage(this.currentPage - 1);
-        }}
-    }}
-    
-    // 跳转到下一页
-    goToNextPage() {{
-        if (this.currentPage < this.totalPages) {{
-            this.goToPage(this.currentPage + 1);
-        }}
-    }}
-    
-    // 更新导航按钮状态：第一页时禁用"上一页"，最后一页时禁用"下一页"
-    updateButtons() {{
-        const prevBtn = document.getElementById('prev-btn');
-        const nextBtn = document.getElementById('next-btn');
-        
-        if (prevBtn) {{
-            prevBtn.disabled = this.currentPage <= 1;
-        }}
-        
-        if (nextBtn) {{
-            nextBtn.disabled = this.currentPage >= this.totalPages;
-        }}
-    }}
-}}
 
-// 页面加载完成后初始化同步功能
-document.addEventListener('DOMContentLoaded', function() {{
-    // 创建全局同步实例，绑定到window对象以便外部调用
-    window.sync = new Pdf2htmlEXExplanationSync();
-    console.log('HTML pdf2htmlEX View initialized with {{}} pages', {total_pages});
-}});
+        setupThemeToggle() {{
+            const btn = document.querySelector('.theme-toggle');
+            if (!btn) return;
+            this.updateThemeIcon();
+            btn.addEventListener('click', () => {{
+                document.body.classList.toggle('dark-mode');
+                const isDark = document.body.classList.contains('dark-mode');
+                localStorage.setItem('html-pdf2htmlex-theme', isDark ? 'dark' : 'light');
+                this.updateThemeIcon();
+            }});
+        }}
 
-// 提供全局函数，方便外部脚本调用（例如从URL跳转到指定页面）
-window.goToPage = function(pageNum) {{
-    if (window.sync) {{
-        window.sync.goToPage(pageNum);
+        updateThemeIcon() {{
+            const btn = document.querySelector('.theme-toggle');
+            if (!btn) return;
+            const isDark = document.body.classList.contains('dark-mode');
+            btn.textContent = isDark ? '☀️' : '🌙';
+            btn.title = isDark ? 'Switch to light mode' : 'Switch to dark mode';
+        }}
+
+        setupFontControls() {{
+            const toggle = document.querySelector('.font-controls-toggle');
+            const panel = document.querySelector('.font-controls');
+            const fontSizeSlider = document.getElementById('font-size-slider');
+            const lineHeightSlider = document.getElementById('line-height-slider');
+            if (!toggle || !panel) return;
+            toggle.addEventListener('click', () => {{
+                this.fontControlsVisible = !this.fontControlsVisible;
+                panel.classList.toggle('visible', this.fontControlsVisible);
+            }});
+            if (fontSizeSlider) {{
+                const saved = localStorage.getItem('html-pdf2htmlex-font-size') || '16';
+                fontSizeSlider.value = saved;
+                document.getElementById('font-size-value').textContent = saved + 'pt';
+                fontSizeSlider.addEventListener('input', (e) => {{
+                    const v = e.target.value;
+                    document.documentElement.style.setProperty('--font-size', v + 'pt');
+                    document.getElementById('font-size-value').textContent = v + 'pt';
+                    localStorage.setItem('html-pdf2htmlex-font-size', v);
+                }});
+            }}
+            if (lineHeightSlider) {{
+                const saved = localStorage.getItem('html-pdf2htmlex-line-height') || '1.8';
+                lineHeightSlider.value = saved;
+                document.getElementById('line-height-value').textContent = saved;
+                lineHeightSlider.addEventListener('input', (e) => {{
+                    const v = e.target.value;
+                    document.documentElement.style.setProperty('--line-height', v);
+                    document.getElementById('line-height-value').textContent = v;
+                    localStorage.setItem('html-pdf2htmlex-line-height', v);
+                }});
+            }}
+        }}
+
+        setupObserver() {{
+            const options = {{ root: document.querySelector('.screenshots-panel'), rootMargin: '-20% 0px -20% 0px', threshold: 0.5 }};
+            this.observer = new IntersectionObserver((entries) => {{
+                entries.forEach(entry => {{
+                    if (entry.isIntersecting) {{
+                        const pageNum = parseInt(entry.target.dataset.page);
+                        this.showExplanation(pageNum);
+                        document.querySelectorAll('.pdf2htmlex-page').forEach(el => el.classList.remove('active'));
+                        entry.target.classList.add('active');
+                    }}
+                }});
+            }}, options);
+            document.querySelectorAll('.pdf2htmlex-page').forEach(el => this.observer.observe(el));
+        }}
+
+        setupControls() {{
+            const prevBtn = document.getElementById('prev-btn');
+            const nextBtn = document.getElementById('next-btn');
+            if (prevBtn) prevBtn.addEventListener('click', () => this.goToPrevPage());
+            if (nextBtn) nextBtn.addEventListener('click', () => this.goToNextPage());
+            document.addEventListener('keydown', (e) => {{
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+                switch(e.key) {{
+                    case 'ArrowUp':
+                    case 'ArrowLeft': e.preventDefault(); this.goToPrevPage(); break;
+                    case 'ArrowDown':
+                    case 'ArrowRight':
+                    case ' ': e.preventDefault(); this.goToNextPage(); break;
+                    case 'Home': e.preventDefault(); this.goToPage(1); break;
+                    case 'End':  e.preventDefault(); this.goToPage(this.totalPages); break;
+                }}
+            }});
+            const explanationsPanel = document.querySelector('.explanations-panel');
+            if (explanationsPanel) explanationsPanel.style.scrollBehavior = 'smooth';
+        }}
+
+        showExplanation(pageNum) {{
+            if (pageNum < 1 || pageNum > this.totalPages) return;
+            const explanationsPanel = document.querySelector('.explanations-panel');
+            if (explanationsPanel && this.currentPage) this.pageScrollPositions[this.currentPage] = explanationsPanel.scrollTop;
+            this.currentPage = pageNum;
+            document.querySelectorAll('.explanation-item').forEach(el => el.classList.remove('active'));
+            const target = document.getElementById(`explanation-${{pageNum}}`);
+            if (target) target.classList.add('active');
+            if (explanationsPanel) {{
+                const originalBehavior = explanationsPanel.style.scrollBehavior; explanationsPanel.style.scrollBehavior = 'auto';
+                if (this.pageScrollPositions[pageNum] !== undefined) {{
+                    explanationsPanel.scrollTop = this.pageScrollPositions[pageNum];
+                }} else {{
+                    explanationsPanel.scrollTop = 0;
+                }}
+                setTimeout(() => {{ explanationsPanel.style.scrollBehavior = originalBehavior; }}, 0);
+            }}
+            const indicator = document.querySelector('.current-page-indicator');
+            if (indicator) indicator.textContent = `第 ${{pageNum}} 页 / 共 ${{this.totalPages}} 页`;
+            const pageInfo = document.querySelector('.page-info');
+            if (pageInfo) pageInfo.textContent = `${{pageNum}} / ${{this.totalPages}}`;
+            this.updateButtons();
+            document.title = `第${{pageNum}}页 - HTML-pdf2htmlEX版`;
+        }}
+
+        goToPage(pageNum) {{
+            if (pageNum < 1 || pageNum > this.totalPages) return;
+            const screenshot = document.getElementById(`page-${{pageNum}}`);
+            if (screenshot) screenshot.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+        }}
+
+        goToPrevPage() {{ if (this.currentPage > 1) this.goToPage(this.currentPage - 1); }}
+        goToNextPage() {{ if (this.currentPage < this.totalPages) this.goToPage(this.currentPage + 1); }}
+
+        updateButtons() {{
+            const prevBtn = document.getElementById('prev-btn');
+            const nextBtn = document.getElementById('next-btn');
+            if (prevBtn) prevBtn.disabled = this.currentPage <= 1;
+            if (nextBtn) nextBtn.disabled = this.currentPage >= this.totalPages;
+        }}
     }}
-}};
-"""
+
+    document.addEventListener('DOMContentLoaded', function() {{
+        window.sync = new Pdf2htmlEXExplanationSync();
+        console.log('HTML pdf2htmlEX View initialized with', {total_pages});
+    }});
+
+    window.goToPage = function(pageNum) {{ if (window.sync) window.sync.goToPage(pageNum); }};
+    """
         return js
