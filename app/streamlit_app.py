@@ -59,31 +59,17 @@ def sidebar_form():
 		output_mode = st.radio(
 			"选择输出格式",
 			["PDF讲解版", "Markdown截图讲解", "HTML截图版"],
+			index=2,
 			help="PDF讲解版：在PDF右侧添加讲解文字\nMarkdown截图讲解：生成包含页面截图和讲解的markdown文档\nHTML截图版：生成单个HTML文件，左侧显示PDF截图，右侧显示多栏markdown渲染讲解"
 		)
 		
+
+		
+
 		st.divider()
 		
 		# ============================================
-		# 2. 上下文增强 - 对所有模式可用
-		# ============================================
-		st.subheader("🧠 上下文增强")
-		use_context = st.checkbox(
-			"启用前后各1页上下文", 
-			value=False, 
-			help="启用后，LLM将同时看到前一页、当前页和后一页的内容，提高讲解连贯性。会增加API调用成本。"
-		)
-		context_prompt_text = st.text_area(
-			"上下文提示词", 
-			value="你将看到前一页、当前页和后一页的内容。请结合上下文信息，生成连贯的讲解。当前页是重点讲解页面，你不需要跟我讲上一页、下一页讲了什么。", 
-			disabled=not use_context, 
-			help="独立的上下文说明提示词，用于指导LLM如何处理多页内容。"
-		)
-		
-		st.divider()
-		
-		# ============================================
-		# 3. 模式特定参数
+		# 2. 模式特定参数
 		# ============================================
 		if output_mode == "Markdown截图讲解":
 			st.subheader("📝 Markdown 参数")
@@ -114,7 +100,7 @@ def sidebar_form():
 			html_show_column_rule = True
 		
 		# ============================================
-		# 4. API 配置
+		# 3. API 配置
 		# ============================================
 		with st.expander("🔑 API 配置", expanded=True):
 			api_key = st.text_input(
@@ -147,7 +133,7 @@ def sidebar_form():
 				)
 		
 		# ============================================
-		# 5. 性能配置
+		# 4. 性能配置
 		# ============================================
 		with st.expander("⚡ 性能配置", expanded=True):
 			col1, col2 = st.columns(2)
@@ -197,7 +183,7 @@ def sidebar_form():
 				)
 		
 		# ============================================
-		# 6. 高级排版配置 - 默认折叠
+		# 5. 高级排版配置 - 默认折叠
 		# ============================================
 		with st.expander("🎨 高级排版配置", expanded=False):
 			# PDF模式专属参数
@@ -266,14 +252,33 @@ def sidebar_form():
 				column_padding = 10
 				cjk_font_name = "SimHei"
 				render_mode = "markdown"
-			
-			# 讲解风格提示词 - 所有模式通用
-			st.markdown("**讲解风格配置**")
+		
+		# ============================================
+		# 6. 讲解风格配置 - 所有模式通用
+		# ============================================
+		with st.expander("✍️ 讲解风格配置", expanded=False):
 			user_prompt = st.text_area(
 				"讲解风格/要求", 
 				value="请用中文讲解本页pdf，关键词给出英文，讲解详尽，语言简洁易懂。讲解让人一看就懂，便于快速学习。请避免不必要的换行，使页面保持紧凑。",
-				help="自定义讲解提示词"
+				help="自定义讲解提示词，指导LLM如何生成讲解内容"
 			)
+		
+		# ============================================
+		# 7. 上下文增强 - 对所有模式可用
+		# ============================================
+		with st.expander("🧠 上下文增强", expanded=False):
+			use_context = st.checkbox(
+				"启用前后各1页上下文", 
+				value=False, 
+				help="启用后，LLM将同时看到前一页、当前页和后一页的内容，提高讲解连贯性。会增加API调用成本。"
+			)
+			context_prompt_text = st.text_area(
+				"上下文提示词", 
+				value="你将看到前一页、当前页和后一页的内容。请结合上下文信息，生成连贯的讲解。当前页是重点讲解页面，你不需要跟我讲上一页、下一页讲了什么。", 
+				disabled=not use_context, 
+				help="独立的上下文说明提示词，用于指导LLM如何处理多页内容。"
+			)
+		
 	
 	return {
 		"api_key": api_key,
