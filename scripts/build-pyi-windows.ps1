@@ -76,6 +76,45 @@ if ($Clean) {
 # Create PyInstaller spec file content
 Write-Info "生成 PyInstaller 配置文件..."
 
+# Find Python site-packages directory
+$pythonPath = python -c "import site; print(site.getsitepackages()[0])" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    $pythonPath = "$env:PYTHON_HOME\Lib\site-packages"
+    if (-not (Test-Path $pythonPath)) {
+        $pythonPath = (Get-Command python).Source | Split-Path -Parent | Join-Path -ChildPath "Lib\site-packages"
+    }
+}
+
+Write-Info "Python site-packages: $pythonPath"
+
+# Collect package metadata files
+$metadataFiles = @()
+$packages = @('streamlit', 'langchain', 'langchain_google_genai', 'google-generativeai', 
+              'PyMuPDF', 'Pillow', 'python-dotenv', 'tqdm', 'markdown', 
+              'beautifulsoup4', 'pymdown-extensions')
+
+foreach ($pkg in $packages) {
+    # Try .dist-info first
+    $distInfo = Join-Path $pythonPath "$pkg.dist-info"
+    if (Test-Path $distInfo) {
+        $metadataFiles += "('$distInfo', '$pkg.dist-info')"
+        Write-Info "  找到: $pkg.dist-info"
+    } else {
+        # Try .egg-info
+        $eggInfo = Join-Path $pythonPath "$pkg.egg-info"
+        if (Test-Path $eggInfo) {
+            $metadataFiles += "('$eggInfo', '$pkg.egg-info')"
+            Write-Info "  找到: $pkg.egg-info"
+        }
+    }
+}
+
+$metadataData = if ($metadataFiles.Count -gt 0) {
+    $metadataFiles -join ",`n        "
+} else {
+    "# No metadata files found"
+}
+
 $specContent = @"
 # -*- mode: python ; coding: utf-8 -*-
 
@@ -88,6 +127,7 @@ a = Analysis(
     datas=[
         ('assets', 'assets'),
         ('app', 'app'),
+        $metadataData
     ],
     hiddenimports=[
         'streamlit',
@@ -239,11 +279,30 @@ GEMINI_API_KEY=your_gemini_api_key_here
 "@
 $envExample | Out-File -FilePath (Join-Path $packageDir ".env.example") -Encoding UTF8 -NoNewline
 
-# Create startup script
+# Create startup script with better error handling
 $startScript = @"
 @echo off
 cd /d "%~dp0"
-lecturer.exe
+echo ==========================================
+echo PDF 讲解流 - 启动中...
+echo ==========================================
+echo.
+echo 正在启动应用，请稍候...
+echo 浏览器将自动打开，或访问: http://localhost:8501
+echo.
+echo 按 Ctrl+C 可停止应用
+echo ==========================================
+echo.
+
+if exist "lecturer.exe" (
+    lecturer.exe
+) else if exist "lecturer\lecturer.exe" (
+    lecturer\lecturer.exe
+) else (
+    echo 错误: 未找到可执行文件
+    echo 请检查打包是否完整
+    pause
+)
 "@
 $startScript | Out-File -FilePath (Join-Path $packageDir "start.bat") -Encoding ASCII
 
