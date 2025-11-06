@@ -542,13 +542,14 @@ class HTMLPdf2htmlEXGenerator:
     overflow: visible;               /* 允许内容溢出显示 */
     display: flex;                   /* 使用弹性布局 */
     flex-direction: column;          /* 垂直方向排列（从上到下） */
-    align-items: left;             /* 水平居中对齐 */
+    align-items: flex-start;         /* 左对齐放置每一页 */
+    justify-content: flex-start;     /* 垂直方向从顶部开始堆叠 */
     padding: 0;                      /* 无内边距，避免额外空白 */
 }
 
-/* PDF 页面样式（.pf 是 pdf2htmlEX 生成的页面类名） */
-.pdf2htmlex-container .pf {
-    margin-bottom: 0px;              /* 页面底部间距为0，紧密排列 */
+/* PDF 页面外层容器样式 */
+.pdf2htmlex-container .pdf2htmlex-page {
+    margin: 0 auto 0px auto;         /* 居中显示每个页面 */
     background: white;               /* 白色背景 */
     border-radius: 4px;              /* 圆角4px，柔和边角 */
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);  /* 轻微阴影效果 */
@@ -556,11 +557,11 @@ class HTMLPdf2htmlEXGenerator:
     transition: all 0.3s ease;       /* 所有属性变化都有0.3秒平滑过渡 */
     position: relative;              /* 相对定位，用于内部绝对定位元素的参考 */
     transform-origin: top center;    /* 缩放变换的原点：顶部中心 */
-    display: inline-block;           /* 行内块元素，保持内容宽度 */
+    display: block;                  /* 块级元素，便于margin自动居中 */
 }
 
 /* 当前激活页面的样式（滚动到视口时高亮显示） */
-.pdf2htmlex-container .pf.active {
+.pdf2htmlex-container .pdf2htmlex-page.active {
     box-shadow: 0 8px 32px rgba(52, 152, 219, 0.6);  /* 更明显的蓝色阴影，突出当前页 */
 }
 
@@ -600,7 +601,7 @@ class HTMLPdf2htmlEXGenerator:
         for i, page_html in enumerate(page_htmls):
             page_num = i + 1
             pdf2htmlex_pages_html += f"""
-            <div class="page-screenshot pf" id="page-{page_num}" data-page="{page_num}">
+            <div class="page-screenshot pdf2htmlex-page" id="page-{page_num}" data-page="{page_num}">
                 <div class="pdf2htmlex-page-badge">第 {page_num} 页</div>
                 {page_html}
             </div>
@@ -802,8 +803,8 @@ class Pdf2htmlEXExplanationSync {{
     scalePdf2htmlexPages() {{
         // 获取左侧PDF面板容器
         const container = document.querySelector('.screenshots-panel');
-        // 获取所有PDF页面元素（.pf是pdf2htmlEX生成的页面类名）
-        const pages = document.querySelectorAll('.pdf2htmlex-container .pf');
+        // 获取所有PDF页面外层元素
+        const pages = document.querySelectorAll('.pdf2htmlex-container .pdf2htmlex-page');
         
         if (!container || !pages.length) return;
         
@@ -813,21 +814,45 @@ class Pdf2htmlEXExplanationSync {{
         
         // 遍历每个PDF页面，计算并应用缩放
         pages.forEach(page => {{
-            // 重置transform，获取页面的原始尺寸
+            const originalPage = page.querySelector('.pf');
             page.style.transform = '';
+            page.style.width = '';
+            page.style.height = '';
+            if (originalPage) {{
+                originalPage.style.transform = '';
+                originalPage.style.transformOrigin = 'top left';
+            }}
             
             // 获取页面的原始宽度（scrollWidth优先，fallback到offsetWidth）
-            const pageWidth = page.scrollWidth || page.offsetWidth;
+            const pageWidth = originalPage
+                ? (originalPage.scrollWidth || originalPage.offsetWidth)
+                : (page.scrollWidth || page.offsetWidth);
+            const pageHeight = originalPage
+                ? (originalPage.scrollHeight || originalPage.offsetHeight)
+                : (page.scrollHeight || page.offsetHeight);
+            if (!pageWidth) {{
+                return;
+            }}
             
             // 计算缩放比例：可用宽度 / 页面原始宽度
             const rawScale = containerWidth / pageWidth;
             // 限制缩放范围：最小0.3倍（避免过度缩小），最大1.2倍（避免过度放大）
             const scale = Math.min(Math.max(rawScale, 0.3), 1.2);
             
-            // 应用CSS transform缩放变换
-            page.style.transform = `scale(${{scale}})`;
-            
-            // 页面间距由CSS中的margin-bottom控制，无需在这里设置
+            if (originalPage) {{
+                page.style.width = `${{pageWidth * scale}}px`;
+                if (pageHeight) {{
+                    page.style.height = `${{pageHeight * scale}}px`;
+                }}
+                originalPage.style.transform = `scale(${{scale}})`;
+            }} else {{
+                page.style.width = `${{pageWidth * scale}}px`;
+                if (pageHeight) {{
+                    page.style.height = `${{pageHeight * scale}}px`;
+                }}
+                page.style.transform = `scale(${{scale}})`;
+                page.style.transformOrigin = 'top center';
+            }}
         }});
     }}
     
@@ -953,7 +978,7 @@ class Pdf2htmlEXExplanationSync {{
                     this.showExplanation(pageNum);
                     
                     // 移除所有页面的active类，然后给当前页面添加active类（高亮显示）
-                    document.querySelectorAll('.page-screenshot').forEach(el => {{
+                    document.querySelectorAll('.pdf2htmlex-page').forEach(el => {{
                         el.classList.remove('active');
                     }});
                     entry.target.classList.add('active');
@@ -962,7 +987,7 @@ class Pdf2htmlEXExplanationSync {{
         }}, options);
         
         // 开始观察所有PDF页面元素
-        document.querySelectorAll('.page-screenshot').forEach(el => {{
+        document.querySelectorAll('.pdf2htmlex-page').forEach(el => {{
             this.observer.observe(el);
         }});
     }}
