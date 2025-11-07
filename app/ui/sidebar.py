@@ -49,45 +49,82 @@ class SidebarForm:
 
     def _render_api_section(self) -> Dict[str, Any]:
         """Render API configuration section."""
-        st.subheader("🔑 API 配置")
+		st.subheader("🔑 API 配置")
 
-        import os
-        api_key = st.text_input(
-            "GEMINI_API_KEY",
-            value=os.getenv('GEMINI_API_KEY'),
-            type="password",
-            help="您的 Gemini API 密钥"
-        )
+		import os
+		provider_options = ["Gemini", "OpenAI"]
+		env_provider = os.getenv('LLM_PROVIDER', 'gemini').lower()
+		default_provider_index = 1 if env_provider == 'openai' else 0
+		provider_label = st.radio(
+			"LLM 提供方",
+			provider_options,
+			index=default_provider_index,
+			key="sidebar_llm_provider"
+		)
+		llm_provider = 'openai' if provider_label == "OpenAI" else 'gemini'
 
-        model_name = st.text_input(
-            "模型名称",
-            value="gemini-2.5-pro",
-            help="使用的 Gemini 模型"
-        )
+		if llm_provider == 'openai':
+			default_api_key = os.getenv('OPENAI_API_KEY', os.getenv('API_KEY', ''))
+			api_key_help = "您的 OpenAI API 密钥"
+			default_model = os.getenv('OPENAI_MODEL_NAME', os.getenv('MODEL_NAME', 'gpt-4o-mini'))
+			model_help = "使用的 OpenAI 模型"
+			api_base_default = os.getenv('OPENAI_API_BASE', os.getenv('LLM_API_BASE', 'https://api.openai.com/v1')) or ""
+			api_base_input = st.text_input(
+				"API Base URL",
+				value=api_base_default,
+				help="OpenAI 兼容接口基础地址，可根据需要修改。",
+				key="sidebar_llm_api_base"
+			)
+			api_base = api_base_input.strip() or None
+		else:
+			default_api_key = os.getenv('GEMINI_API_KEY', os.getenv('API_KEY', ''))
+			api_key_help = "您的 Gemini API 密钥"
+			default_model = os.getenv('GEMINI_MODEL_NAME', os.getenv('MODEL_NAME', 'gemini-2.5-pro'))
+			model_help = "使用的 Gemini 模型"
+			api_base_env = os.getenv('GEMINI_API_BASE', os.getenv('LLM_API_BASE', ''))
+			api_base = (api_base_env.strip() if api_base_env else None)
+			st.session_state.setdefault("sidebar_llm_api_base", api_base or "")
 
-        col1, col2 = st.columns(2)
+		api_key = st.text_input(
+			"API Key",
+			value=default_api_key,
+			type="password",
+			help=api_key_help,
+			key="sidebar_llm_api_key"
+		)
 
-        with col1:
-            temperature = st.slider(
-                "温度",
-                0.0, 1.0, 0.4, 0.1,
-                help="控制输出随机性"
-            )
+		model_name = st.text_input(
+			"模型名称",
+			value=default_model,
+			help=model_help,
+			key="sidebar_llm_model_name"
+		)
 
-        with col2:
-            max_tokens = st.number_input(
-                "最大输出 Tokens",
-                min_value=256,
-                max_value=8192,
-                value=4096,
-                step=256,
-                help="限制单次响应长度"
-            )
+		col1, col2 = st.columns(2)
+
+		with col1:
+			temperature = st.slider(
+				"温度",
+				0.0, 1.0, 0.4, 0.1,
+				help="控制输出随机性"
+			)
+
+		with col2:
+			max_tokens = st.number_input(
+				"最大输出 Tokens",
+				min_value=256,
+				max_value=8192,
+				value=4096,
+				step=256,
+				help="限制单次响应长度"
+			)
 
         st.divider()
 
-        return {
+		return {
+			"llm_provider": llm_provider,
             "api_key": api_key,
+			"api_base": api_base,
             "model_name": model_name,
             "temperature": float(temperature),
             "max_tokens": int(max_tokens)
@@ -364,4 +401,8 @@ class CollapsibleSidebar:
                     key="quick_api_key"
                 )
                 st.markdown("点击 📋 展开完整配置")
-                return {"api_key": api_key}
+				return {
+					"llm_provider": 'gemini',
+					"api_key": api_key,
+					"api_base": None
+				}
