@@ -225,6 +225,14 @@ class HTMLPdf2htmlEXGenerator:
             # Ensure output directory exists and is writable
             os.makedirs(output_dir, exist_ok=True)
             
+            # In Docker environments, ensure proper permissions
+            # Set directory permissions to be writable by the current user
+            try:
+                import stat
+                os.chmod(output_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IROTH | stat.S_IXOTH)
+            except Exception as e:
+                logger.debug(f"Could not set directory permissions: {e}")
+            
             # Check if directory is writable
             test_file = os.path.join(output_dir, '.write_test')
             try:
@@ -283,6 +291,17 @@ class HTMLPdf2htmlEXGenerator:
             if features['split_pages']:
                 cmd.extend(['--split-pages', '0'])
             
+            # In Docker environments, use output directory as tmp-dir to avoid permission issues
+            # This helps with manifest file creation
+            try:
+                # Check if we're in Docker (common indicators)
+                if os.path.exists('/.dockerenv') or os.path.exists('/app'):
+                    # Use output directory as tmp-dir to ensure same permissions
+                    cmd.extend(['--tmp-dir', dest_dir])
+                    logger.info(f"Using output directory as tmp-dir for Docker environment: {dest_dir}")
+            except Exception as e:
+                logger.debug(f"Could not set tmp-dir: {e}")
+            
             # Add destination directory and files
             cmd.extend(['--dest-dir', dest_dir, input_path, output_html_name])
             
@@ -298,53 +317,175 @@ class HTMLPdf2htmlEXGenerator:
                 timeout=300  # 5 minutes timeout
             )
             
+            # Combine stdout and stderr for error checking (pdf2htmlEX may output errors to either)
+            combined_output = (result.stdout or '') + (result.stderr or '')
+            
             # Check if output file exists first (even if return code is non-zero)
             # Sometimes pdf2htmlEX fails on manifest but still generates the HTML
+            # This is common in Docker environments where manifest file creation may fail
             output_exists = os.path.exists(output_html_path)
             
+            # Log directory contents for debugging
+            try:
+                dir_contents = os.listdir(output_dir)
+                logger.debug(f"Output directory contents: {dir_contents}")
+            except Exception as e:
+                logger.debug(f"Could not list output directory: {e}")
+                dir_contents = []
+            
+            # Also check for alternative output file names (pdf2htmlEX may use different names)
+            alternative_names = [
+                "output.html",
+                os.path.splitext(os.path.basename(input_path))[0] + ".html",
+                "index.html"
+            ]
+            found_html_path = None
+            if output_exists:
+                found_html_path = output_html_path
+                logger.info(f"Found expected output file: {output_html_path}")
+            else:
+                # Try to find output file with alternative names
+                for alt_name in alternative_names:
+                    alt_path = os.path.join(output_dir, alt_name)
+                    if os.path.exists(alt_path):
+                        found_html_path = alt_path
+                        logger.info(f"Found output file with alternative name: {alt_path}")
+                        break
+                
+                # Also search for any .html file in the output directory
+                if not found_html_path:
+                    try:
+                        html_files = [f for f in dir_contents if f.endswith('.html')]
+                        if html_files:
+                            found_html_path = os.path.join(output_dir, html_files[0])
+                            logger.info(f"Found HTML file in output directory: {found_html_path} (from {len(html_files)} HTML files)")
+                        else:
+                            logger.warning(f"No HTML files found in output directory. Contents: {dir_contents}")
+                            # Also log this as error for visibility in error messages
+                            if "manifest" in combined_output.lower() or "Cannot open" in combined_output:
+                                logger.error(f"Manifest error detected. Output directory contents: {dir_contents}")
+                    except Exception as e:
+                        logger.debug(f"Could not search for HTML files: {e}")
+            
             if result.returncode != 0:
+                # Log detailed information for debugging
+                logger.info(f"pdf2htmlEX returned non-zero exit code: {result.returncode}")
+                logger.debug(f"Output directory: {output_dir}")
+                logger.debug(f"Expected output path: {output_html_path}")
+                logger.debug(f"Found HTML path: {found_html_path}")
+                
                 # If output file exists despite error, check if it's valid
-                if output_exists:
+                # This is especially important for Docker environments where manifest errors are common
+                if found_html_path and os.path.exists(found_html_path):
+                    logger.info(f"Checking HTML file: {found_html_path}, exists: {os.path.exists(found_html_path)}")
                     # Check if HTML file has content
                     try:
-                        with open(output_html_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        file_size = os.path.getsize(found_html_path)
+                        logger.info(f"HTML file size: {file_size} bytes")
+                        
+                        with open(found_html_path, 'r', encoding='utf-8', errors='ignore') as f:
                             content = f.read()
-                            if len(content) > 100:  # Has meaningful content
+                            content_len = len(content)
+                            logger.info(f"HTML file content length: {content_len} bytes")
+                            
+                            if content_len > 100:  # Has meaningful content
+                                # Extract actual error message (skip progress messages)
+                                error_lines = []
+                                for line in combined_output.split('\n'):
+                                    line_lower = line.lower()
+                                    if any(keyword in line_lower for keyword in ['error', 'cannot', 'failed', 'fatal']):
+                                        error_lines.append(line)
+                                
+                                error_preview = '\n'.join(error_lines[:5]) if error_lines else combined_output[-500:]
+                                
                                 logger.warning(
                                     f"pdf2htmlEX reported error (exit code {result.returncode}) "
-                                    f"but output file exists and appears valid. "
-                                    f"Error was: {result.stderr[:500]}"
+                                    f"but output file exists and appears valid ({content_len} bytes). "
+                                    f"Error: {error_preview}"
                                 )
                                 # Continue with the generated file
-                                logger.info(f"Using generated HTML file despite error: {output_html_path}")
-                                return True, output_html_path, None
+                                logger.info(f"Using generated HTML file despite error: {found_html_path}")
+                                return True, found_html_path, None
+                            else:
+                                logger.warning(f"HTML file exists but content too small: {content_len} bytes (expected >100)")
+                                # If file is 0 bytes, pdf2htmlEX likely failed before writing content
+                                if content_len == 0:
+                                    logger.error(
+                                        "HTML file is empty (0 bytes). This indicates pdf2htmlEX failed "
+                                        "to write content, likely due to manifest file creation failure. "
+                                        "The manifest error prevents HTML content from being written."
+                                    )
                     except Exception as e:
-                        logger.debug(f"Could not read output file: {e}")
+                        logger.error(f"Could not read output file {found_html_path}: {e}", exc_info=True)
+                else:
+                    logger.warning(f"HTML file not found or does not exist. found_html_path: {found_html_path}")
                 
                 # If we get here, the error is real
-                error_msg = f"pdf2htmlEX failed (exit code {result.returncode}):\n{result.stderr}"
-                logger.error(error_msg)
+                # Extract actual error message from combined output
+                error_lines = []
+                for line in combined_output.split('\n'):
+                    line_lower = line.lower()
+                    if any(keyword in line_lower for keyword in ['error', 'cannot', 'failed', 'fatal']):
+                        error_lines.append(line)
                 
-                # Provide more helpful error message for manifest file errors
-                if "manifest" in result.stderr.lower() or "Cannot open" in result.stderr:
-                    error_msg += (
-                        "\n\n提示：这可能是由于以下原因之一：\n"
-                        "1. 输出目录权限不足\n"
-                        "2. WSL 路径转换问题\n"
-                        "3. 临时文件系统限制\n"
-                        "建议：尝试使用 'HTML截图版' 模式作为替代方案"
-                    )
+                error_msg_text = '\n'.join(error_lines) if error_lines else combined_output
+                
+                # For manifest errors, provide detailed diagnostic information
+                if "manifest" in combined_output.lower() or "Cannot open" in combined_output:
+                    # Log directory contents for debugging
+                    try:
+                        dir_info = f"Output directory: {output_dir}\n"
+                        dir_info += f"Directory exists: {os.path.exists(output_dir)}\n"
+                        if os.path.exists(output_dir):
+                            dir_info += f"Directory contents: {os.listdir(output_dir)}\n"
+                            dir_info += f"Directory writable: {os.access(output_dir, os.W_OK)}\n"
+                        logger.error(f"Manifest error diagnostic:\n{dir_info}")
+                    except Exception as e:
+                        logger.error(f"Could not get directory info: {e}")
+                    
+                    error_msg_text = "Error: Cannot open the manifest file"
+                    error_msg = f"pdf2htmlEX failed (exit code {result.returncode}):\n{error_msg_text}"
+                    
+                    # Check if HTML file exists but is empty
+                    html_empty = False
+                    if found_html_path and os.path.exists(found_html_path):
+                        try:
+                            if os.path.getsize(found_html_path) == 0:
+                                html_empty = True
+                        except:
+                            pass
+                    
+                    if html_empty:
+                        error_msg += (
+                            "\n\n⚠️ 问题诊断："
+                            "\npdf2htmlEX 无法创建 manifest 文件，导致 HTML 文件为空（0 字节）。"
+                            "\n在 Docker 环境中，这是 pdf2htmlEX 的已知限制。"
+                            "\n\n✅ 解决方案："
+                            "\n请使用 'HTML截图版' 模式，该模式不依赖 pdf2htmlEX，"
+                            "\n可以正常工作并生成高质量的 HTML 文档。"
+                        )
+                    else:
+                        error_msg += (
+                            "\n\n提示：pdf2htmlEX 无法创建 manifest 文件。"
+                            "\n系统已尝试自动查找 HTML 文件，但未找到有效内容。"
+                            "\n\n建议：尝试使用 'HTML截图版' 模式作为替代方案"
+                        )
+                else:
+                    error_msg = f"pdf2htmlEX failed (exit code {result.returncode}):\n{error_msg_text}"
+                
+                logger.error(error_msg)
                 
                 return False, None, error_msg
             
-            # Check if output file exists
-            if not output_exists:
-                error_msg = "pdf2htmlEX completed but output file not found"
+            # Check if output file exists (use found path if available)
+            final_output_path = found_html_path or output_html_path
+            if not os.path.exists(final_output_path):
+                error_msg = f"pdf2htmlEX completed but output file not found at {final_output_path}"
                 logger.error(error_msg)
                 return False, None, error_msg
             
-            logger.info(f"pdf2htmlEX conversion successful: {output_html_path}")
-            return True, output_html_path, None
+            logger.info(f"pdf2htmlEX conversion successful: {final_output_path}")
+            return True, final_output_path, None
             
         except subprocess.TimeoutExpired:
             error_msg = "pdf2htmlEX conversion timeout (>5 minutes)"

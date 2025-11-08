@@ -6,13 +6,14 @@ import zipfile
 import hashlib
 import tempfile
 from typing import Optional, Dict, Any, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import streamlit as st
 from dotenv import load_dotenv
 
 from app.ui_helpers import (
     StateManager, display_batch_status, validate_file_upload,
-    process_single_file, display_file_result,
+    process_single_file, process_single_file_with_progress, display_file_result,
     build_zip_cache_pdf, build_zip_cache_markdown
 )
 
@@ -382,6 +383,21 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 			st.stop()
 		return
 	
+	# Validate concurrency configuration
+	from app.services.concurrency_validator import validate_concurrency_config
+	file_count = len(uploaded_files)
+	if file_count > 0:
+		is_valid, warnings = validate_concurrency_config(
+			page_concurrency=params.get("concurrency", 50),
+			file_count=file_count,
+			rpm_limit=params.get("rpm_limit", 150),
+			tpm_budget=params.get("tpm_budget", 2000000),
+			rpd_limit=params.get("rpd_limit", 10000)
+		)
+		if warnings:
+			for warning in warnings:
+				st.warning(f"⚠️ {warning}")
+	
 	# Initialize processing state
 	StateManager.set_processing(True)
 	StateManager.set_batch_results({})
@@ -399,9 +415,29 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 	else:
 		st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→合成新PDF（保持向量）")
 	
-	# Progress tracking
-	overall_progress = st.progress(0)
-	overall_status = st.empty()
+	# Initialize detailed progress tracker
+	from app.ui.components.detailed_progress_tracker import DetailedProgressTracker
+	progress_tracker = DetailedProgressTracker(
+		total_files=total_files,
+		operation_name="批量处理",
+		processing_mode="batch_generation"
+	)
+	
+	# Initialize files in tracker and get page counts
+	import fitz
+	for uploaded_file in uploaded_files:
+		uploaded_file.seek(0)
+		src_bytes = uploaded_file.read()
+		try:
+			pdf_doc = fitz.open(stream=src_bytes, filetype="pdf")
+			total_pages = pdf_doc.page_count
+			pdf_doc.close()
+		except Exception:
+			total_pages = 0
+		progress_tracker.initialize_file(uploaded_file.name, total_pages)
+	
+	# Render initial progress
+	progress_tracker.force_render()  # Force initial render
 	
 	# Process each file
 	for i, uploaded_file in enumerate(uploaded_files):
@@ -414,9 +450,10 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 			"json_bytes": None
 		}
 		
-		# Update progress
-		overall_progress.progress(int((i / total_files) * 100))
-		overall_status.write(f"正在处理文件 {i+1}/{total_files}: {filename}")
+		# Start file processing
+		progress_tracker.start_file(filename)
+		progress_tracker.update_file_stage(filename, 0)  # Stage 0: Rendering
+		progress_tracker.force_render()  # Force render for stage change
 		
 		# Read file bytes and get cache hash
 		uploaded_file.seek(0)  # Reset file pointer in case it was read before
@@ -424,16 +461,57 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 		file_hash = get_file_hash(src_bytes, params)
 		cached_result = load_result_from_file(file_hash)
 		
-		# Process file (pass bytes directly to avoid file read issues)
-		result = process_single_file(src_bytes, filename, params, file_hash, cached_result)
-		StateManager.get_batch_results()[filename] = result
+		# Create progress callbacks for this file
+		def create_progress_callbacks(fname: str):
+			def on_progress(done: int, total: int):
+				progress_tracker.update_file_page_progress(fname, done, total)
+				progress_tracker.update_file_stage(fname, 1)  # Stage 1: Generating
+				# Use throttled render for frequent updates
+				progress_tracker.render()
+			
+			def on_page_status(page_index: int, status: str, error: Optional[str]):
+				progress_tracker.update_page_status(fname, page_index, status, error)
+				# Use throttled render for frequent updates
+				progress_tracker.render()
+			
+			return on_progress, on_page_status
 		
-		# Display result
-		display_file_result(filename, result)
+		on_progress, on_page_status = create_progress_callbacks(filename)
+		
+		# Process file with progress callbacks
+		try:
+			# Process file (modify to accept progress callbacks)
+			result = process_single_file_with_progress(
+				src_bytes, filename, params, file_hash, cached_result,
+				on_progress=on_progress, on_page_status=on_page_status
+			)
+			
+			# Update stage to composing
+			progress_tracker.update_file_stage(filename, 2)  # Stage 2: Composing
+			progress_tracker.force_render()  # Force render for stage change
+			
+			StateManager.get_batch_results()[filename] = result
+			
+			# Mark file as completed or failed
+			if result.get("status") == "completed":
+				progress_tracker.complete_file(filename, success=True)
+			else:
+				progress_tracker.complete_file(filename, success=False, error=result.get("error"))
+			progress_tracker.force_render()  # Force render for completion
+			
+			# Display result
+			display_file_result(filename, result)
+			
+		except Exception as e:
+			progress_tracker.complete_file(filename, success=False, error=str(e))
+			StateManager.get_batch_results()[filename] = {
+				"status": "failed",
+				"error": str(e)
+			}
+			progress_tracker.force_render()  # Force render for error
 	
-	# Complete processing
-	overall_progress.progress(100)
-	overall_status.write("批量处理完成！")
+	# Complete processing - final render
+	progress_tracker.force_render()  # Force final render
 	
 	# Statistics
 	batch_results = StateManager.get_batch_results()
@@ -755,6 +833,8 @@ def main():
 	def _build_and_run_with_pairs(pairs):
 		import json
 		from app.services import pdf_processor
+		from app.ui.components.detailed_progress_tracker import DetailedProgressTracker
+		import fitz
 
 		output_mode = params.get("output_mode", "PDF讲解版")
 		if output_mode == "Markdown截图讲解":
@@ -778,30 +858,52 @@ def main():
 			pdf_data.append((pdf_name, pdf_obj.read()))
 			json_data.append((json_alias, json_obj.read()))
 
+		# Initialize detailed progress tracker for JSON regeneration
+		total_files = len(pdf_data)
+		progress_tracker = DetailedProgressTracker(
+			total_files=total_files,
+			operation_name="根据JSON重新生成",
+			processing_mode="json_regeneration"
+		)
+		
+		# Initialize files in tracker
+		for pdf_name, pdf_bytes in pdf_data:
+			try:
+				pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+				total_pages = pdf_doc.page_count
+				pdf_doc.close()
+			except Exception:
+				total_pages = 0
+			progress_tracker.initialize_file(pdf_name, total_pages)
+		
+		# Render initial progress
+		progress_tracker.force_render()  # Force initial render
+
 		batch_results = {}
-
-		if output_mode == "Markdown截图讲解":
-			# Markdown模式：手动处理每个文件
-			for pdf_name, pdf_bytes in pdf_data:
-				try:
-					# 找到对应的JSON数据
-					json_filename = os.path.splitext(pdf_name)[0] + ".json"
-					json_content = None
-					for json_name, json_bytes in json_data:
-						if json_name == json_filename:
-							json_content = json.loads(json_bytes.decode('utf-8'))
-							break
-
-					if json_content is None:
-						batch_results[pdf_name] = {
-							"status": "failed",
-							"error": "未找到匹配的JSON文件"
-						}
-						continue
-
-					# 转换键为整数
-					explanations = {int(k): str(v) for k, v in json_content.items()}
-
+		
+		# 创建JSON数据映射，便于查找
+		json_data_map = {name: bytes_data for name, bytes_data in json_data}
+		
+		# 定义单个文件处理函数（用于并发处理）
+		def process_single_file_from_json(pdf_name, pdf_bytes, on_progress=None, on_page_status=None):
+			"""处理单个文件的JSON重新生成"""
+			try:
+				# 找到对应的JSON数据
+				json_filename = os.path.splitext(pdf_name)[0] + ".json"
+				json_bytes = json_data_map.get(json_filename)
+				
+				if json_bytes is None:
+					return pdf_name, {
+						"status": "failed",
+						"error": "未找到匹配的JSON文件"
+					}
+				
+				# 解析JSON
+				json_content = json.loads(json_bytes.decode('utf-8'))
+				explanations = {int(k): str(v) for k, v in json_content.items()}
+				
+				# 根据输出模式生成内容
+				if output_mode == "Markdown截图讲解":
 					# 创建临时目录保存图片（如果不嵌入）
 					embed_images = params.get("embed_images", True)
 					images_dir = None
@@ -809,54 +911,27 @@ def main():
 						base_name = os.path.splitext(pdf_name)[0]
 						images_dir = os.path.join(TEMP_DIR, f"{base_name}_images")
 						os.makedirs(images_dir, exist_ok=True)
-
-					# 生成markdown文档
+					
 					markdown_content, images_dir_return = pdf_processor.generate_markdown_with_screenshots(
 						src_bytes=pdf_bytes,
 						explanations=explanations,
 						screenshot_dpi=params.get("screenshot_dpi", 150),
 						embed_images=embed_images,
 						title=params.get("markdown_title", "PDF文档讲解"),
-						images_dir=images_dir
+						images_dir=images_dir,
+						on_progress=on_progress,
+						on_page_status=on_page_status
 					)
-
-					batch_results[pdf_name] = {
+					
+					return pdf_name, {
 						"status": "completed",
 						"markdown_content": markdown_content,
 						"explanations": explanations,
 						"images_dir": images_dir_return
 					}
-
-				except Exception as e:
-					batch_results[pdf_name] = {
-						"status": "failed",
-						"error": str(e)
-					}
-		elif output_mode == "HTML截图版" or output_mode == "HTML-pdf2htmlEX版":
-			# HTML截图版/pdf2htmlEX模式：手动处理每个文件
-			for pdf_name, pdf_bytes in pdf_data:
-				try:
-					# 找到对应的JSON数据
-					json_filename = os.path.splitext(pdf_name)[0] + ".json"
-					json_content = None
-					for json_name, json_bytes in json_data:
-						if json_name == json_filename:
-							json_content = json.loads(json_bytes.decode('utf-8'))
-							break
-
-					if json_content is None:
-						batch_results[pdf_name] = {
-							"status": "failed",
-							"error": "未找到匹配的JSON文件"
-						}
-						continue
-
-					# 转换键为整数
-					explanations = {int(k): str(v) for k, v in json_content.items()}
-
-					# 生成HTML文档
+					
+				elif output_mode == "HTML截图版" or output_mode == "HTML-pdf2htmlEX版":
 					base_name = os.path.splitext(pdf_name)[0]
-					# Use user-configured title if provided, otherwise use filename
 					title = params.get("markdown_title", "").strip() or base_name
 					
 					if output_mode == "HTML-pdf2htmlEX版":
@@ -869,7 +944,9 @@ def main():
 							line_spacing=params.get("line_spacing", 1.2),
 							column_count=params.get("html_column_count", 2),
 							column_gap=params.get("html_column_gap", 20),
-							show_column_rule=params.get("html_show_column_rule", True)
+							show_column_rule=params.get("html_show_column_rule", True),
+							on_progress=on_progress,
+							on_page_status=on_page_status
 						)
 					else:  # HTML截图版
 						html_content = pdf_processor.generate_html_screenshot_document(
@@ -882,34 +959,147 @@ def main():
 							line_spacing=params.get("line_spacing", 1.2),
 							column_count=params.get("html_column_count", 2),
 							column_gap=params.get("html_column_gap", 20),
-							show_column_rule=params.get("html_show_column_rule", True)
+							show_column_rule=params.get("html_show_column_rule", True),
+							on_progress=on_progress,
+							on_page_status=on_page_status
 						)
-
-					batch_results[pdf_name] = {
+					
+					return pdf_name, {
 						"status": "completed",
 						"html_content": html_content,
 						"explanations": explanations
 					}
-
-				except Exception as e:
-					batch_results[pdf_name] = {
-						"status": "failed",
-						"error": str(e)
+					
+				else:  # PDF模式
+					from app.services.pdf_composer import compose_pdf
+					result_pdf = compose_pdf(
+						pdf_bytes,
+						explanations,
+						params["right_ratio"],
+						params["font_size"],
+						font_name=(params.get("cjk_font_name") or "SimHei"),
+						render_mode=params.get("render_mode", "markdown"),
+						line_spacing=params["line_spacing"],
+						column_padding=params.get("column_padding", 10)
+					)
+					
+					return pdf_name, {
+						"status": "completed",
+						"pdf_bytes": result_pdf,
+						"explanations": explanations
 					}
+					
+			except Exception as e:
+				return pdf_name, {
+					"status": "failed",
+					"error": str(e)
+				}
+		
+		# 根据文件数量决定是否使用并发处理
+		use_concurrent = total_files > 1
+		max_workers = min(20, total_files) if use_concurrent else 1
+		
+		if use_concurrent:
+			# 并发处理 - 支持页面级进度显示
+			# 为每个文件创建线程安全的进度回调
+			file_callbacks = {}
+			for pdf_name, pdf_bytes in pdf_data:
+				on_progress, on_page_status = progress_tracker.create_thread_safe_callbacks(pdf_name)
+				file_callbacks[pdf_name] = (on_progress, on_page_status)
+			
+			with ThreadPoolExecutor(max_workers=max_workers) as executor:
+				# 提交所有任务，传递进度回调
+				future_to_pdf = {}
+				for pdf_name, pdf_bytes in pdf_data:
+					on_progress, on_page_status = file_callbacks[pdf_name]
+					future = executor.submit(
+						process_single_file_from_json,
+						pdf_name,
+						pdf_bytes,
+						on_progress,
+						on_page_status
+					)
+					future_to_pdf[future] = pdf_name
+				
+				# 收集结果，定期更新UI
+				completed_count = 0
+				last_render_time = time.time()
+				render_interval = 0.5  # 每0.5秒更新一次UI
+				
+				for future in as_completed(future_to_pdf):
+					pdf_name = future_to_pdf[future]
+					completed_count += 1
+					
+					# 更新进度：开始处理（如果还没开始）
+					if pdf_name not in progress_tracker.file_progress or \
+					   progress_tracker.file_progress[pdf_name].status == "waiting":
+						progress_tracker.start_file(pdf_name)
+						progress_tracker.update_file_stage(pdf_name, 0)
+					
+					try:
+						result_pdf_name, result = future.result()
+						batch_results[result_pdf_name] = result
+						
+						# 更新进度：完成
+						if result.get("status") == "completed":
+							progress_tracker.update_file_stage(pdf_name, 1)
+							progress_tracker.complete_file(pdf_name, success=True)
+						else:
+							progress_tracker.complete_file(pdf_name, success=False, error=result.get("error"))
+						
+					except Exception as e:
+						batch_results[pdf_name] = {
+							"status": "failed",
+							"error": str(e)
+						}
+						progress_tracker.complete_file(pdf_name, success=False, error=str(e))
+					
+					# 定期更新UI（避免过于频繁）
+					current_time = time.time()
+					if current_time - last_render_time >= render_interval:
+						progress_tracker.force_render()
+						last_render_time = current_time
+				
+				# 最终渲染
+				progress_tracker.force_render()
 		else:
-			# PDF模式：使用现有的批处理方法
-			batch_results = pdf_processor.batch_recompose_from_json(
-				pdf_data,
-				json_data,
-				params["right_ratio"],
-				params["font_size"],
-				font_name=(params.get("cjk_font_name") or "SimHei"),
-				render_mode=params.get("render_mode", "markdown"),
-				line_spacing=params["line_spacing"],
-				column_padding=params.get("column_padding", 10)
-			)
+			# 顺序处理（单个文件时）- 可以实时更新页面级进度
+			for pdf_name, pdf_bytes in pdf_data:
+				progress_tracker.start_file(pdf_name)
+				progress_tracker.update_file_stage(pdf_name, 0)
+				progress_tracker.force_render()
+				
+				# 创建进度回调
+				def create_progress_callbacks(fname: str):
+					def on_progress(done: int, total: int):
+						progress_tracker.update_file_page_progress(fname, done, total)
+						progress_tracker.update_file_stage(fname, 1)  # Stage 1: Composing
+						progress_tracker.render()
+					
+					def on_page_status(page_index: int, status: str, error: Optional[str]):
+						progress_tracker.update_page_status(fname, page_index, status, error)
+						progress_tracker.render()
+					
+					return on_progress, on_page_status
+				
+				on_progress, on_page_status = create_progress_callbacks(pdf_name)
+				
+				result_pdf_name, result = process_single_file_from_json(
+					pdf_name, pdf_bytes, on_progress=on_progress, on_page_status=on_page_status
+				)
+				batch_results[result_pdf_name] = result
+				
+				if result.get("status") == "completed":
+					progress_tracker.update_file_stage(pdf_name, 1)
+					progress_tracker.complete_file(pdf_name, success=True)
+				else:
+					progress_tracker.complete_file(pdf_name, success=False, error=result.get("error"))
+				progress_tracker.force_render()
 
 		st.session_state["batch_json_results"] = batch_results
+		
+		# Final progress render
+		progress_tracker.force_render()  # Force final render
 
 		# 构建ZIP缓存
 		if output_mode == "Markdown截图讲解":

@@ -31,6 +31,10 @@ class RateLimiter:
 		# 清理每日请求（24小时窗口）
 		self._daily_requests = [t for t in self._daily_requests if now - t < 86400]
 
+		wait_count = 0
+		base_wait = 0.1  # 基础等待时间（秒）
+		max_wait = 2.0  # 最大等待时间（秒）
+		
 		while True:
 			now = time.time()
 			self._req_timestamps = [t for t in self._req_timestamps if now - t < self.window_seconds]
@@ -44,7 +48,27 @@ class RateLimiter:
 
 			if req_ok and tpm_ok and rpd_ok:
 				break
-			await asyncio.sleep(0.25)
+			
+			# 智能等待策略：根据限制类型和剩余时间计算等待时间
+			wait_time = base_wait
+			
+			# 如果RPM受限，计算到下一个可用slot的时间
+			if not req_ok and self._req_timestamps:
+				oldest_req = min(self._req_timestamps)
+				time_until_available = self.window_seconds - (now - oldest_req)
+				if time_until_available > 0:
+					wait_time = min(max_wait, max(base_wait, time_until_available / len(self._req_timestamps)))
+			
+			# 如果TPM受限，等待时间稍长
+			if not tpm_ok:
+				wait_time = min(max_wait, wait_time * 1.5)
+			
+			# 指数退避：等待次数越多，等待时间越长（但不超过最大值）
+			if wait_count > 0:
+				wait_time = min(max_wait, wait_time * (1.1 ** min(wait_count, 10)))
+			
+			await asyncio.sleep(wait_time)
+			wait_count += 1
 
 		self._req_timestamps.append(time.time())
 		self._used_tokens.append((time.time(), est_tokens))

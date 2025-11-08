@@ -125,9 +125,14 @@ COPY --chown=appuser:appuser app/ /app/app/
 COPY --chown=appuser:appuser requirements.txt /app/
 COPY --chown=appuser:appuser assets/fonts/ /app/assets/fonts/
 
-# 复制启动脚本
-COPY --chown=appuser:appuser docker/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# 复制启动脚本（在 root 用户下复制和设置权限）
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh && \
+    chown appuser:appuser /app/entrypoint.sh && \
+    # 确保文件使用 Unix 行结束符
+    sed -i 's/\r$//' /app/entrypoint.sh || true && \
+    # 验证文件存在且可执行
+    test -f /app/entrypoint.sh && test -x /app/entrypoint.sh
 
 # 切换到应用用户
 USER appuser
@@ -142,8 +147,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # 暴露端口
 EXPOSE 8501
 
-# 设置入口点
-ENTRYPOINT ["/app/entrypoint.sh"]
+# 设置入口点（使用 bash 执行以确保兼容性）
+ENTRYPOINT ["/bin/bash", "/app/entrypoint.sh"]
 
 # 默认启动命令
 CMD ["streamlit", "run", "app/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]

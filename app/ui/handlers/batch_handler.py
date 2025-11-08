@@ -238,7 +238,7 @@ class BatchHandler:
 class SmartBatchHandler(BatchHandler):
     """Smart batch handler with optimization features."""
 
-    def __init__(self, max_workers: int = 5):
+    def __init__(self, max_workers: int = 20):
         """Initialize smart batch handler."""
         super().__init__(max_workers)
         self.adaptive_workers = True
@@ -258,22 +258,78 @@ class SmartBatchHandler(BatchHandler):
         Returns:
             Processing results
         """
+        from app.services.concurrency_validator import (
+            validate_concurrency_config,
+            calculate_safe_concurrency,
+            get_concurrency_recommendations
+        )
+        from app.services.concurrency_controller import GlobalConcurrencyController
+        
+        # Get concurrency parameters
+        page_concurrency = params.get("concurrency", 50)
+        rpm_limit = params.get("rpm_limit", 150)
+        file_count = len(files)
+        
+        # Validate configuration
+        is_valid, warnings = validate_concurrency_config(
+            page_concurrency=page_concurrency,
+            file_count=file_count,
+            rpm_limit=rpm_limit,
+            tpm_budget=params.get("tpm_budget", 2000000),
+            rpd_limit=params.get("rpd_limit", 10000)
+        )
+        
+        # Show warnings if any
+        if warnings:
+            for warning in warnings:
+                st.warning(warning)
+        
         # Adapt worker count based on system and file size
         file_sizes = [len(f.read()) for f in files]
-        f.seek(0) for f in files  # Reset all file pointers
+        for f in files:
+            f.seek(0)  # Reset all file pointers
 
         # Calculate average file size
         avg_size_mb = sum(file_sizes) / (1024 * 1024 * len(files))
 
-        # Adjust worker count based on file size
+        # Adjust worker count based on file size and global concurrency
         if avg_size_mb > 20:  # Large files
             max_workers = 2
         elif avg_size_mb > 10:  # Medium files
             max_workers = 3
         else:  # Small files
             max_workers = min(10, len(files))
+        
+        # Consider global concurrency limit
+        global_controller = GlobalConcurrencyController.get_instance_sync()
+        available_slots = global_controller.get_available_slots()
+        
+        # Adjust file concurrency based on available global slots
+        # Reserve some slots for page-level concurrency
+        estimated_pages_per_file = 50  # Rough estimate
+        slots_needed_per_file = min(page_concurrency, estimated_pages_per_file)
+        max_safe_file_workers = max(1, available_slots // max(1, slots_needed_per_file))
+        max_workers = min(max_workers, max_safe_file_workers)
+        
+        # Calculate safe concurrency if needed
+        if not is_valid:
+            safe_page_concurrency, _ = calculate_safe_concurrency(
+                page_concurrency,
+                file_count,
+                rpm_limit
+            )
+            if safe_page_concurrency < page_concurrency:
+                st.info(
+                    f"并发配置已自动调整: 页面并发从 {page_concurrency} 降至 {safe_page_concurrency} "
+                    f"以避免超过限制"
+                )
+                params["concurrency"] = safe_page_concurrency
 
-        st.info(f"优化设置: {max_workers} 个并发工作线程 (平均文件大小: {avg_size_mb:.1f}MB)")
+        st.info(
+            f"优化设置: {max_workers} 个并发工作线程 "
+            f"(平均文件大小: {avg_size_mb:.1f}MB, "
+            f"全局可用槽位: {available_slots})"
+        )
 
         # Choose processing method based on file count
         if len(files) <= 3:

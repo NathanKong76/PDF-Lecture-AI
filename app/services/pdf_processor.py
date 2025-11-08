@@ -112,12 +112,15 @@ async def _generate_explanations_async(
 	concurrency: int,
 	on_progress: Optional[Callable[[int, int], None]],
 	on_log: Optional[Callable[[str], None]],
+	global_concurrency_controller=None,
+	on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
 ) -> Tuple[Dict[int, str], Dict[int, str], List[int]]:
 	total_pages = len(page_images)
 	if total_pages == 0:
 		return {}, {}, []
 
-	semaphore = asyncio.Semaphore(max(1, concurrency))
+	# Use local semaphore for page-level concurrency
+	local_semaphore = asyncio.Semaphore(max(1, concurrency))
 	progress_lock = asyncio.Lock()
 	completed = {"count": 0}
 	preview_images: Dict[int, str] = {
@@ -126,35 +129,82 @@ async def _generate_explanations_async(
 	}
 
 	async def process_page(page_index: int) -> Tuple[int, str, Optional[Exception]]:
-		async with semaphore:
-			current_image = page_images[page_index]
-			error: Optional[Exception] = None
-			result = ""
+		# Acquire both local and global semaphores
+		async with local_semaphore:
+			# Use global concurrency controller if available
+			if global_concurrency_controller:
+				request_id = f"page_{page_index}"
+				async with global_concurrency_controller:
+					current_image = page_images[page_index]
+					error: Optional[Exception] = None
+					result = ""
 
-			if current_image:
-				images_with_labels: List[Tuple[str, bytes]] = []
-				if use_context and page_index > 0 and page_images[page_index - 1]:
-					images_with_labels.append(("前一页", page_images[page_index - 1]))
-				images_with_labels.append(("当前页", current_image))
-				if use_context and page_index < total_pages - 1 and page_images[page_index + 1]:
-					images_with_labels.append(("后一页", page_images[page_index + 1]))
+					if current_image:
+						images_with_labels: List[Tuple[str, bytes]] = []
+						if use_context and page_index > 0 and page_images[page_index - 1]:
+							images_with_labels.append(("前一页", page_images[page_index - 1]))
+						images_with_labels.append(("当前页", current_image))
+						if use_context and page_index < total_pages - 1 and page_images[page_index + 1]:
+							images_with_labels.append(("后一页", page_images[page_index + 1]))
 
-				try:
-					result = await llm_client.explain_pages_with_context(
-						images_with_labels,
-						system_prompt=user_prompt,
-						context_prompt=context_prompt,
-					)
-				except Exception as exc:  # noqa: BLE001
-					error = exc
+						try:
+							result = await llm_client.explain_pages_with_context(
+								images_with_labels,
+								system_prompt=user_prompt,
+								context_prompt=context_prompt,
+							)
+						except Exception as exc:  # noqa: BLE001
+							error = exc
+					else:
+						error = RuntimeError("页面截图生成失败，跳过 LLM 调用")
 			else:
-				error = RuntimeError("页面截图生成失败，跳过 LLM 调用")
+				# No global controller, just use local semaphore
+				current_image = page_images[page_index]
+				error: Optional[Exception] = None
+				result = ""
+
+				if current_image:
+					images_with_labels: List[Tuple[str, bytes]] = []
+					if use_context and page_index > 0 and page_images[page_index - 1]:
+						images_with_labels.append(("前一页", page_images[page_index - 1]))
+					images_with_labels.append(("当前页", current_image))
+					if use_context and page_index < total_pages - 1 and page_images[page_index + 1]:
+						images_with_labels.append(("后一页", page_images[page_index + 1]))
+
+					try:
+						result = await llm_client.explain_pages_with_context(
+							images_with_labels,
+							system_prompt=user_prompt,
+							context_prompt=context_prompt,
+						)
+					except Exception as exc:  # noqa: BLE001
+						error = exc
+				else:
+					error = RuntimeError("页面截图生成失败，跳过 LLM 调用")
 
 			async with progress_lock:
 				completed["count"] += 1
+				
+				# Update page status before progress callback
+				if on_page_status:
+					try:
+						if error:
+							on_page_status(page_index, "failed", str(error))
+						else:
+							on_page_status(page_index, "processing", None)
+					except Exception:
+						pass
+				
 				if on_progress:
 					try:
 						on_progress(completed["count"], total_pages)
+					except Exception:
+						pass
+				
+				# Update page status after processing
+				if on_page_status and not error:
+					try:
+						on_page_status(page_index, "completed", None)
 					except Exception:
 						pass
 
@@ -204,6 +254,7 @@ def generate_explanations(
 	context_prompt: Optional[str] = None,
 	llm_provider: str = "gemini",
 	api_base: Optional[str] = None,
+	on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
 ) -> Tuple[Dict[int, str], Dict[int, str], List[int]]:
 	if not api_key:
 		raise ValueError("api_key is required to generate explanations")
@@ -243,6 +294,10 @@ def generate_explanations(
 			except Exception:
 				pass
 
+	# Get global concurrency controller if available
+	from .concurrency_controller import GlobalConcurrencyController
+	global_controller = GlobalConcurrencyController.get_instance_sync()
+	
 	return _run_async(
 		_generate_explanations_async(
 			llm_client=llm_client,
@@ -253,6 +308,8 @@ def generate_explanations(
 			concurrency=max(1, concurrency),
 			on_progress=on_progress,
 			on_log=on_log,
+			global_concurrency_controller=global_controller,
+			on_page_status=on_page_status,
 		)
 	)
 
@@ -318,7 +375,9 @@ def generate_html_screenshot_document(
     line_spacing: float = 1.2,
     column_count: int = 2,
     column_gap: int = 20,
-    show_column_rule: bool = True
+    show_column_rule: bool = True,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None
 ) -> str:
     """
     Generate HTML screenshot document with PDF screenshots and explanations
@@ -346,11 +405,48 @@ def generate_html_screenshot_document(
     # Generate screenshots for all pages
     screenshot_data = []
     for page_num in range(total_pages):
-        screenshot_bytes = _page_png_bytes(src_doc, page_num, screenshot_dpi)
-        screenshot_data.append({
-            'page_num': page_num + 1,  # Convert to 1-indexed
-            'image_bytes': screenshot_bytes
-        })
+        # 更新页面状态：开始处理
+        if on_page_status:
+            try:
+                on_page_status(page_num, "processing", None)
+            except Exception:
+                pass
+        
+        try:
+            screenshot_bytes = _page_png_bytes(src_doc, page_num, screenshot_dpi)
+            screenshot_data.append({
+                'page_num': page_num + 1,  # Convert to 1-indexed
+                'image_bytes': screenshot_bytes
+            })
+            
+            # 更新页面状态：完成
+            if on_page_status:
+                try:
+                    on_page_status(page_num, "completed", None)
+                except Exception:
+                    pass
+            
+            # 更新进度
+            if on_progress:
+                try:
+                    on_progress(page_num + 1, total_pages)
+                except Exception:
+                    pass
+        except Exception as e:
+            # 更新页面状态：失败
+            if on_page_status:
+                try:
+                    on_page_status(page_num, "failed", str(e))
+                except Exception:
+                    pass
+            
+            # 更新进度
+            if on_progress:
+                try:
+                    on_progress(page_num + 1, total_pages)
+                except Exception:
+                    pass
+            raise
     
     src_doc.close()
     
@@ -386,7 +482,9 @@ def generate_html_pdf2htmlex_document(
     line_spacing: float = 1.2,
     column_count: int = 2,
     column_gap: int = 20,
-    show_column_rule: bool = True
+    show_column_rule: bool = True,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None
 ) -> str:
     """
     Generate HTML pdf2htmlEX document with pdf2htmlEX converted PDF and explanations
@@ -431,11 +529,38 @@ def generate_html_pdf2htmlex_document(
         
         total_pages = len(page_htmls)
         
+        # 更新进度：pdf2htmlEX 转换完成，开始解析页面
+        if on_progress:
+            try:
+                on_progress(0, total_pages)  # 转换完成，开始处理页面
+            except Exception:
+                pass
+        
         # Convert explanations from 0-indexed to 1-indexed
         explanations_1indexed = {
             page_num + 1: text 
             for page_num, text in explanations.items()
         }
+        
+        # 更新每个页面的状态（解析阶段）
+        for page_num in range(total_pages):
+            if on_page_status:
+                try:
+                    on_page_status(page_num, "processing", None)
+                except Exception:
+                    pass
+            
+            if on_progress:
+                try:
+                    on_progress(page_num + 1, total_pages)
+                except Exception:
+                    pass
+            
+            if on_page_status:
+                try:
+                    on_page_status(page_num, "completed", None)
+                except Exception:
+                    pass
         
         # Generate HTML document
         html_content = HTMLPdf2htmlEXGenerator.generate_html_pdf2htmlex_view(

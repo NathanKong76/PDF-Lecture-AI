@@ -10,6 +10,11 @@ export STREAMLIT_BROWSER_GATHER_USAGE_STATS=${STREAMLIT_BROWSER_GATHER_USAGE_STA
 # 创建必要的目录
 mkdir -p /app/logs /app/temp /app/sync_html_output
 
+# 确保临时目录有正确的权限（解决 pdf2htmlEX manifest 文件问题）
+# 在 Docker 环境中，pdf2htmlEX 可能无法创建 manifest 文件，但 HTML 文件仍会生成
+chmod -R 755 /app/temp 2>/dev/null || true
+chmod -R 755 /tmp 2>/dev/null || true
+
 # 设置字体环境变量
 if [ -f "/app/assets/fonts/SIMHEI.TTF" ]; then
     export STREAMLIT_SERVER_HEADLESS=true

@@ -39,6 +39,7 @@ class AppConfig:
     rpm_limit: int = 150
     tpm_budget: int = 2000000
     rpd_limit: int = 10000
+    max_global_concurrency: int = 200  # Maximum total concurrent requests across all operations
     
     # Prompts
     user_prompt: str = "请用中文讲解本页pdf，关键词给出英文，讲解详尽，语言简洁易懂。讲解让人一看就懂，便于快速学习。请避免不必要的换行，使页面保持紧凑。"

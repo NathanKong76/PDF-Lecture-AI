@@ -5,7 +5,7 @@ This module contains helper functions to reduce code duplication
 and improve maintainability of the main Streamlit app.
 """
 
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Callable
 import streamlit as st
 
 from app.services import pdf_processor
@@ -25,6 +25,7 @@ class StateManager:
             "batch_json_results": {},
             "batch_json_processing": False,
             "batch_json_zip_bytes": None,
+            "detailed_progress_tracker": None,
         }
         for key, default_value in defaults.items():
             if key not in st.session_state:
@@ -49,6 +50,16 @@ class StateManager:
     def set_processing(value: bool):
         """Set batch processing status."""
         st.session_state["batch_processing"] = value
+    
+    @staticmethod
+    def get_progress_tracker():
+        """Get detailed progress tracker from session state."""
+        return st.session_state.get("detailed_progress_tracker")
+    
+    @staticmethod
+    def set_progress_tracker(tracker):
+        """Set detailed progress tracker in session state."""
+        st.session_state["detailed_progress_tracker"] = tracker
 
 
 def display_batch_status():
@@ -102,7 +113,9 @@ def process_single_file_pdf(
     src_bytes: bytes,
     params: Dict[str, Any],
     cached_result: Optional[Dict[str, Any]],
-    file_hash: str
+    file_hash: str,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
 ) -> Dict[str, Any]:
     """
     Process a single PDF file in PDF mode.
@@ -114,11 +127,13 @@ def process_single_file_pdf(
         params: Processing parameters
         cached_result: Cached result if available
         file_hash: File hash for cache
+        on_progress: Progress callback (done, total)
+        on_page_status: Page status callback (page_index, status, error)
         
     Returns:
         Processing result dictionary
     """
-    from app.cache_processor import cached_process_pdf
+    from app.cache_processor import get_file_hash, save_result_to_file, load_result_from_file
     
     column_padding_value = params.get("column_padding", 10)
     
@@ -147,10 +162,59 @@ def process_single_file_pdf(
             st.warning(f"缓存重新合成失败，尝试重新处理: {str(e)}")
             # Fall through to reprocessing
     
-    # Process from scratch
-    with st.spinner(f"处理 {filename} 中..."):
-        result = cached_process_pdf(src_bytes, params)
+    # Process from scratch with progress callbacks
+    try:
+        explanations, preview_images, failed_pages = pdf_processor.generate_explanations(
+            src_bytes=src_bytes,
+            api_key=params["api_key"],
+            model_name=params["model_name"],
+            user_prompt=params["user_prompt"],
+            temperature=params["temperature"],
+            max_tokens=params["max_tokens"],
+            dpi=params["dpi"],
+            concurrency=params["concurrency"],
+            rpm_limit=params["rpm_limit"],
+            tpm_budget=params["tpm_budget"],
+            rpd_limit=params["rpd_limit"],
+            on_progress=on_progress,
+            use_context=params.get("use_context", False),
+            context_prompt=params.get("context_prompt", None),
+            llm_provider=params.get("llm_provider", "gemini"),
+            api_base=params.get("api_base"),
+            on_page_status=on_page_status,
+        )
+        
+        result_bytes = pdf_processor.compose_pdf(
+            src_bytes,
+            explanations,
+            params["right_ratio"],
+            params["font_size"],
+            font_name=(params.get("cjk_font_name") or "SimHei"),
+            render_mode=params.get("render_mode", "markdown"),
+            line_spacing=params["line_spacing"],
+            column_padding=column_padding_value
+        )
+        
+        result = {
+            "status": "completed",
+            "pdf_bytes": result_bytes,
+            "explanations": explanations,
+            "failed_pages": failed_pages
+        }
+        
+        # Save to cache file
+        save_result_to_file(file_hash, result)
+        
         return result
+        
+    except Exception as e:
+        return {
+            "status": "failed",
+            "pdf_bytes": None,
+            "explanations": {},
+            "failed_pages": [],
+            "error": str(e)
+        }
 
 
 def process_single_file_markdown(
@@ -159,7 +223,9 @@ def process_single_file_markdown(
     src_bytes: bytes,
     params: Dict[str, Any],
     cached_result: Optional[Dict[str, Any]],
-    file_hash: str
+    file_hash: str,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
 ) -> Dict[str, Any]:
     """
     Process a single file in Markdown mode.
@@ -171,11 +237,13 @@ def process_single_file_markdown(
         params: Processing parameters
         cached_result: Cached result if available
         file_hash: File hash for cache
+        on_progress: Progress callback
+        on_page_status: Page status callback
         
     Returns:
         Processing result dictionary
     """
-    from app.cache_processor import cached_process_markdown
+    from app.cache_processor import save_result_to_file
     
     # Try to use cached result
     if cached_result and cached_result.get("status") == "completed":
@@ -198,8 +266,8 @@ def process_single_file_markdown(
                 title=params["markdown_title"],
                 use_context=params.get("use_context", False),
                 context_prompt=params.get("context_prompt", None),
-			llm_provider=params.get("llm_provider", "gemini"),
-			api_base=params.get("api_base"),
+                llm_provider=params.get("llm_provider", "gemini"),
+                api_base=params.get("api_base"),
             )
             return {
                 "status": "completed",
@@ -213,7 +281,46 @@ def process_single_file_markdown(
     
     # Process from scratch
     with st.spinner(f"处理 {filename} 中..."):
-        result = cached_process_markdown(src_bytes, params)
+        # Generate explanations with progress callbacks
+        explanations, preview_images, failed_pages = pdf_processor.generate_explanations(
+            src_bytes=src_bytes,
+            api_key=params["api_key"],
+            model_name=params["model_name"],
+            user_prompt=params["user_prompt"],
+            temperature=params["temperature"],
+            max_tokens=params["max_tokens"],
+            dpi=params["dpi"],
+            concurrency=params["concurrency"],
+            rpm_limit=params["rpm_limit"],
+            tpm_budget=params["tpm_budget"],
+            rpd_limit=params["rpd_limit"],
+            on_progress=on_progress,
+            use_context=params.get("use_context", False),
+            context_prompt=params.get("context_prompt", None),
+            llm_provider=params.get("llm_provider", "gemini"),
+            api_base=params.get("api_base"),
+            on_page_status=on_page_status,
+        )
+        
+        # Generate markdown
+        markdown_content, _images_dir = pdf_processor.generate_markdown_with_screenshots(
+            src_bytes=src_bytes,
+            explanations=explanations,
+            screenshot_dpi=params["screenshot_dpi"],
+            embed_images=params["embed_images"],
+            title=params["markdown_title"],
+        )
+        
+        result = {
+            "status": "completed",
+            "markdown_content": markdown_content,
+            "explanations": explanations,
+            "failed_pages": failed_pages
+        }
+        
+        # Save to cache
+        save_result_to_file(file_hash, result)
+        
         return result
 
 
@@ -223,10 +330,12 @@ def process_single_file_html_screenshot(
     src_bytes: bytes,
     params: Dict[str, Any],
     cached_result: Optional[Dict[str, Any]],
-    file_hash: str
+    file_hash: str,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
 ) -> Dict[str, Any]:
     """
-    Process a single file in HTML Screenshot mode.
+    Process a single file in HTML screenshot mode.
     
     Args:
         uploaded_file: Uploaded file object (optional, not used if src_bytes provided)
@@ -235,11 +344,13 @@ def process_single_file_html_screenshot(
         params: Processing parameters
         cached_result: Cached result if available
         file_hash: File hash for cache
+        on_progress: Progress callback
+        on_page_status: Page status callback
         
     Returns:
         Processing result dictionary
     """
-    from app.cache_processor import cached_process_markdown
+    from app.cache_processor import save_result_to_file
     
     # Try to use cached result
     if cached_result and cached_result.get("status") == "completed":
@@ -274,9 +385,27 @@ def process_single_file_html_screenshot(
     # Process from scratch
     with st.spinner(f"处理 {filename} 中..."):
         # First get explanations (reuse markdown processing for explanation generation)
-        markdown_result = cached_process_markdown(src_bytes, params)
+        explanations, preview_images, failed_pages = pdf_processor.generate_explanations(
+            src_bytes=src_bytes,
+            api_key=params["api_key"],
+            model_name=params["model_name"],
+            user_prompt=params["user_prompt"],
+            temperature=params["temperature"],
+            max_tokens=params["max_tokens"],
+            dpi=params["dpi"],
+            concurrency=params["concurrency"],
+            rpm_limit=params["rpm_limit"],
+            tpm_budget=params["tpm_budget"],
+            rpd_limit=params["rpd_limit"],
+            on_progress=on_progress,
+            use_context=params.get("use_context", False),
+            context_prompt=params.get("context_prompt", None),
+            llm_provider=params.get("llm_provider", "gemini"),
+            api_base=params.get("api_base"),
+            on_page_status=on_page_status,
+        )
         
-        if markdown_result.get("status") == "completed":
+        if explanations:
             # Generate HTML screenshot document
             try:
                 base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
@@ -284,7 +413,7 @@ def process_single_file_html_screenshot(
                 title = params.get("markdown_title", "").strip() or base_name
                 html_content = pdf_processor.generate_html_screenshot_document(
                     src_bytes=src_bytes,
-                    explanations=markdown_result["explanations"],
+                    explanations=explanations,
                     screenshot_dpi=params.get("screenshot_dpi", 150),
                     title=title,
                     font_name=params.get("cjk_font_name", "SimHei"),
@@ -294,12 +423,14 @@ def process_single_file_html_screenshot(
                     column_gap=params.get("html_column_gap", 20),
                     show_column_rule=params.get("html_show_column_rule", True)
                 )
-                return {
+                result = {
                     "status": "completed",
                     "html_content": html_content,
-                    "explanations": markdown_result["explanations"],
-                    "failed_pages": markdown_result.get("failed_pages", [])
+                    "explanations": explanations,
+                    "failed_pages": failed_pages
                 }
+                save_result_to_file(file_hash, result)
+                return result
             except Exception as e:
                 return {
                     "status": "failed",
@@ -309,7 +440,13 @@ def process_single_file_html_screenshot(
                     "error": f"HTML生成失败: {str(e)}"
                 }
         else:
-            return markdown_result
+            return {
+                "status": "failed",
+                "html_content": None,
+                "explanations": {},
+                "failed_pages": [],
+                "error": "生成讲解失败"
+            }
 
 
 def process_single_file_html_pdf2htmlex(
@@ -318,7 +455,9 @@ def process_single_file_html_pdf2htmlex(
     src_bytes: bytes,
     params: Dict[str, Any],
     cached_result: Optional[Dict[str, Any]],
-    file_hash: str
+    file_hash: str,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
 ) -> Dict[str, Any]:
     """
     Process a single file in HTML pdf2htmlEX mode.
@@ -330,19 +469,19 @@ def process_single_file_html_pdf2htmlex(
         params: Processing parameters
         cached_result: Cached result if available
         file_hash: File hash for cache
+        on_progress: Progress callback
+        on_page_status: Page status callback
         
     Returns:
         Processing result dictionary
     """
-    from app.cache_processor import cached_process_markdown
+    from app.cache_processor import save_result_to_file
     
     # Try to use cached result
     if cached_result and cached_result.get("status") == "completed":
         st.info(f"📋 {filename} 使用缓存结果")
         try:
-            # Generate HTML from cached explanations
             base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
-            # Use user-configured title if provided, otherwise use filename
             title = params.get("markdown_title", "").strip() or base_name
             html_content = pdf_processor.generate_html_pdf2htmlex_document(
                 src_bytes=src_bytes,
@@ -366,19 +505,35 @@ def process_single_file_html_pdf2htmlex(
             # Fall through to reprocessing
     
     # Process from scratch
-    with st.spinner(f"处理 {filename} 中 (使用pdf2htmlEX转换)..."):
-        # First get explanations (reuse markdown processing for explanation generation)
-        markdown_result = cached_process_markdown(src_bytes, params)
+    with st.spinner(f"处理 {filename} 中..."):
+        # First get explanations
+        explanations, preview_images, failed_pages = pdf_processor.generate_explanations(
+            src_bytes=src_bytes,
+            api_key=params["api_key"],
+            model_name=params["model_name"],
+            user_prompt=params["user_prompt"],
+            temperature=params["temperature"],
+            max_tokens=params["max_tokens"],
+            dpi=params["dpi"],
+            concurrency=params["concurrency"],
+            rpm_limit=params["rpm_limit"],
+            tpm_budget=params["tpm_budget"],
+            rpd_limit=params["rpd_limit"],
+            on_progress=on_progress,
+            use_context=params.get("use_context", False),
+            context_prompt=params.get("context_prompt", None),
+            llm_provider=params.get("llm_provider", "gemini"),
+            api_base=params.get("api_base"),
+            on_page_status=on_page_status,
+        )
         
-        if markdown_result.get("status") == "completed":
-            # Generate HTML pdf2htmlEX document
+        if explanations:
             try:
                 base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
-                # Use user-configured title if provided, otherwise use filename
                 title = params.get("markdown_title", "").strip() or base_name
                 html_content = pdf_processor.generate_html_pdf2htmlex_document(
                     src_bytes=src_bytes,
-                    explanations=markdown_result["explanations"],
+                    explanations=explanations,
                     title=title,
                     font_name=params.get("cjk_font_name", "SimHei"),
                     font_size=params.get("font_size", 14),
@@ -387,22 +542,30 @@ def process_single_file_html_pdf2htmlex(
                     column_gap=params.get("html_column_gap", 20),
                     show_column_rule=params.get("html_show_column_rule", True)
                 )
-                return {
+                result = {
                     "status": "completed",
                     "html_content": html_content,
-                    "explanations": markdown_result["explanations"],
-                    "failed_pages": markdown_result.get("failed_pages", [])
+                    "explanations": explanations,
+                    "failed_pages": failed_pages
                 }
+                save_result_to_file(file_hash, result)
+                return result
             except Exception as e:
                 return {
                     "status": "failed",
                     "html_content": None,
                     "explanations": {},
                     "failed_pages": [],
-                    "error": f"HTML-pdf2htmlEX生成失败: {str(e)}"
+                    "error": f"HTML生成失败: {str(e)}"
                 }
         else:
-            return markdown_result
+            return {
+                "status": "failed",
+                "html_content": None,
+                "explanations": {},
+                "failed_pages": [],
+                "error": "生成讲解失败"
+            }
 
 
 def process_single_file(
@@ -468,6 +631,77 @@ def process_single_file(
         }
 
 
+def process_single_file_with_progress(
+    src_bytes: bytes,
+    filename: str,
+    params: Dict[str, Any],
+    file_hash: str,
+    cached_result: Optional[Dict[str, Any]],
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
+) -> Dict[str, Any]:
+    """
+    Process a single uploaded file with progress callbacks.
+    
+    Args:
+        src_bytes: PDF file bytes (already read)
+        filename: File name
+        params: Processing parameters
+        file_hash: File hash for cache
+        cached_result: Cached result if available
+        on_progress: Progress callback (done, total)
+        on_page_status: Page status callback (page_index, status, error)
+        
+    Returns:
+        Processing result dictionary
+    """
+    try:
+        # Validate PDF file
+        is_valid, validation_error = pdf_processor.validate_pdf_file(src_bytes)
+        if not is_valid:
+            return {
+                "status": "failed",
+                "pdf_bytes": None,
+                "explanations": {},
+                "failed_pages": [],
+                "error": f"PDF文件验证失败: {validation_error}"
+            }
+        
+        # Process based on output mode
+        output_mode = params.get("output_mode", "PDF讲解版")
+        if output_mode == "Markdown截图讲解":
+            return process_single_file_markdown(
+                None, filename, src_bytes, params, cached_result, file_hash,
+                on_progress=on_progress, on_page_status=on_page_status
+            )
+        elif output_mode == "HTML截图版":
+            return process_single_file_html_screenshot(
+                None, filename, src_bytes, params, cached_result, file_hash,
+                on_progress=on_progress, on_page_status=on_page_status
+            )
+        elif output_mode == "HTML-pdf2htmlEX版":
+            return process_single_file_html_pdf2htmlex(
+                None, filename, src_bytes, params, cached_result, file_hash,
+                on_progress=on_progress, on_page_status=on_page_status
+            )
+        else:
+            return process_single_file_pdf(
+                None, filename, src_bytes, params, cached_result, file_hash,
+                on_progress=on_progress, on_page_status=on_page_status
+            )
+            
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error processing file {filename}: {e}", exc_info=True)
+        return {
+            "status": "failed",
+            "pdf_bytes": None,
+            "explanations": {},
+            "failed_pages": [],
+            "error": str(e)
+        }
+
+
 def display_file_result(filename: str, result: Dict[str, Any]):
     """
     Display processing result for a single file.
@@ -485,190 +719,72 @@ def display_file_result(filename: str, result: Dict[str, Any]):
 
 
 def build_zip_cache_pdf(batch_results: Dict[str, Dict[str, Any]]) -> Optional[bytes]:
-    """
-    Build ZIP cache for PDF mode results.
-    
-    Args:
-        batch_results: Batch processing results
-        
-    Returns:
-        ZIP file bytes or None
-    """
-    import io
+    """Build ZIP file containing PDFs and JSONs from batch results."""
     import zipfile
+    import io
     import json
-    import os
     
-    completed_any = any(
-        r.get("status") == "completed" and r.get("pdf_bytes") 
-        for r in batch_results.values()
-    )
-    
-    if not completed_any:
-        return None
-    
-    # Pre-generate JSON bytes for each file
-    for fname, res in batch_results.items():
-        if res.get("status") == "completed" and res.get("explanations"):
-            try:
-                res["json_bytes"] = json.dumps(
-                    res["explanations"], 
-                    ensure_ascii=False, 
-                    indent=2
-                ).encode("utf-8")
-            except Exception:
-                res["json_bytes"] = None
-    
-    # Build ZIP
     zip_buffer = io.BytesIO()
+    
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for fname, res in batch_results.items():
-            if res.get("status") == "completed" and res.get("pdf_bytes"):
-                base_name = os.path.splitext(fname)[0]
-                new_filename = f"{base_name}讲解版.pdf"
-                zip_file.writestr(new_filename, res["pdf_bytes"])
-                if res.get("json_bytes"):
-                    json_filename = f"{base_name}.json"
-                    zip_file.writestr(json_filename, res["json_bytes"])
+        for filename, result in batch_results.items():
+            if result.get("status") == "completed":
+                base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                
+                # Add PDF
+                if result.get("pdf_bytes"):
+                    zip_file.writestr(
+                        f"{base_name}讲解版.pdf",
+                        result["pdf_bytes"]
+                    )
+                
+                # Add JSON
+                if result.get("explanations"):
+                    json_bytes = json.dumps(
+                        result["explanations"],
+                        ensure_ascii=False,
+                        indent=2
+                    ).encode("utf-8")
+                    zip_file.writestr(
+                        f"{base_name}.json",
+                        json_bytes
+                    )
     
     zip_buffer.seek(0)
-    return zip_buffer.getvalue()
+    return zip_buffer.read() if zip_buffer.getvalue() else None
 
 
 def build_zip_cache_markdown(batch_results: Dict[str, Dict[str, Any]]) -> Optional[bytes]:
-    """
-    Build ZIP cache for Markdown mode results.
-    
-    Args:
-        batch_results: Batch processing results
-        
-    Returns:
-        ZIP file bytes or None
-    """
-    import io
+    """Build ZIP file containing Markdown files and JSONs from batch results."""
     import zipfile
+    import io
     import json
-    import os
-    
-    completed_any = any(
-        r.get("status") == "completed" and r.get("markdown_content")
-        for r in batch_results.values()
-    )
-    
-    if not completed_any:
-        return None
     
     zip_buffer = io.BytesIO()
+    
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for fname, res in batch_results.items():
-            if res.get("status") == "completed" and res.get("markdown_content"):
-                base_name = os.path.splitext(fname)[0]
-                markdown_filename = f"{base_name}讲解文档.md"
-                zip_file.writestr(markdown_filename, res["markdown_content"])
-                if res.get("explanations"):
-                    try:
-                        json_bytes = json.dumps(
-                            res["explanations"], 
-                            ensure_ascii=False, 
-                            indent=2
-                        ).encode("utf-8")
-                        json_filename = f"{base_name}.json"
-                        zip_file.writestr(json_filename, json_bytes)
-                    except Exception:
-                        pass
+        for filename, result in batch_results.items():
+            if result.get("status") == "completed":
+                base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                
+                # Add Markdown
+                if result.get("markdown_content"):
+                    zip_file.writestr(
+                        f"{base_name}讲解文档.md",
+                        result["markdown_content"].encode("utf-8")
+                    )
+                
+                # Add JSON
+                if result.get("explanations"):
+                    json_bytes = json.dumps(
+                        result["explanations"],
+                        ensure_ascii=False,
+                        indent=2
+                    ).encode("utf-8")
+                    zip_file.writestr(
+                        f"{base_name}.json",
+                        json_bytes
+                    )
     
     zip_buffer.seek(0)
-    return zip_buffer.getvalue()
-
-
-def build_zip_cache_html_screenshot(batch_results: Dict[str, Dict[str, Any]]) -> Optional[bytes]:
-    """
-    Build ZIP cache for HTML Screenshot mode results.
-    
-    Args:
-        batch_results: Batch processing results
-        
-    Returns:
-        ZIP file bytes or None
-    """
-    import io
-    import zipfile
-    import json
-    import os
-    
-    completed_any = any(
-        r.get("status") == "completed" and r.get("html_content")
-        for r in batch_results.values()
-    )
-    
-    if not completed_any:
-        return None
-    
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for fname, res in batch_results.items():
-            if res.get("status") == "completed" and res.get("html_content"):
-                base_name = os.path.splitext(fname)[0]
-                html_filename = f"{base_name}讲解文档.html"
-                zip_file.writestr(html_filename, res["html_content"])
-                if res.get("explanations"):
-                    try:
-                        json_bytes = json.dumps(
-                            res["explanations"], 
-                            ensure_ascii=False, 
-                            indent=2
-                        ).encode("utf-8")
-                        json_filename = f"{base_name}.json"
-                        zip_file.writestr(json_filename, json_bytes)
-                    except Exception:
-                        pass
-    
-    zip_buffer.seek(0)
-    return zip_buffer.getvalue()
-
-
-def build_zip_cache_html_pdf2htmlex(batch_results: Dict[str, Dict[str, Any]]) -> Optional[bytes]:
-    """
-    Build ZIP cache for HTML pdf2htmlEX mode results.
-    
-    Args:
-        batch_results: Batch processing results
-        
-    Returns:
-        ZIP file bytes or None
-    """
-    import io
-    import zipfile
-    import json
-    import os
-    
-    completed_any = any(
-        r.get("status") == "completed" and r.get("html_content")
-        for r in batch_results.values()
-    )
-    
-    if not completed_any:
-        return None
-    
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for fname, res in batch_results.items():
-            if res.get("status") == "completed" and res.get("html_content"):
-                base_name = os.path.splitext(fname)[0]
-                html_filename = f"{base_name}讲解文档.html"
-                zip_file.writestr(html_filename, res["html_content"])
-                if res.get("explanations"):
-                    try:
-                        json_bytes = json.dumps(
-                            res["explanations"], 
-                            ensure_ascii=False, 
-                            indent=2
-                        ).encode("utf-8")
-                        json_filename = f"{base_name}.json"
-                        zip_file.writestr(json_filename, json_bytes)
-                    except Exception:
-                        pass
-    
-    zip_buffer.seek(0)
-    return zip_buffer.getvalue()
-
+    return zip_buffer.read() if zip_buffer.getvalue() else None

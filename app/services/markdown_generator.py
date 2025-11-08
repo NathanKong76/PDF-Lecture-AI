@@ -7,7 +7,7 @@ Markdown 生成服务
 
 import base64
 import os
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, Callable
 from .pdf_composer import _page_png_bytes
 from .logger import get_logger
 import fitz
@@ -66,7 +66,9 @@ def generate_markdown_with_screenshots(
     screenshot_dpi: int = 150,
     embed_images: bool = True,
     title: str = "PDF文档讲解",
-    images_dir: Optional[str] = None
+    images_dir: Optional[str] = None,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None
 ) -> Tuple[str, Optional[str]]:
     """
     生成包含页面截图和讲解的完整 Markdown 文档
@@ -108,6 +110,13 @@ def generate_markdown_with_screenshots(
         
         # 遍历每一页
         for page_num in range(total_pages):
+            # 更新页面状态：开始处理
+            if on_page_status:
+                try:
+                    on_page_status(page_num, "processing", None)
+                except Exception:
+                    pass
+            
             # 获取该页的讲解
             explanation = explanations.get(page_num, "")
             
@@ -122,6 +131,20 @@ def generate_markdown_with_screenshots(
                     markdown_lines.append(f"{explanation.strip()}\n\n")
                 else:
                     markdown_lines.append("*（截图生成失败）*\n\n")
+                
+                # 更新页面状态：失败
+                if on_page_status:
+                    try:
+                        on_page_status(page_num, "failed", str(e))
+                    except Exception:
+                        pass
+                
+                # 更新进度
+                if on_progress:
+                    try:
+                        on_progress(page_num + 1, total_pages)
+                    except Exception:
+                        pass
                 continue
             
             # 如果使用外部图片，保存图片文件
@@ -147,6 +170,20 @@ def generate_markdown_with_screenshots(
                 image_path=image_path
             )
             markdown_lines.append(page_markdown)
+            
+            # 更新页面状态：完成
+            if on_page_status:
+                try:
+                    on_page_status(page_num, "completed", None)
+                except Exception:
+                    pass
+            
+            # 更新进度
+            if on_progress:
+                try:
+                    on_progress(page_num + 1, total_pages)
+                except Exception:
+                    pass
         
         # 关闭文档
         src_doc.close()
