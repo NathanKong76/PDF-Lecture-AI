@@ -107,6 +107,8 @@ __pycache__/
 scripts/
 *.ps1
 *.sh
+# Allow shell scripts required during Docker builds
+!docker/*.sh
 
 # 其他工具
 .pre-commit-config.yaml
