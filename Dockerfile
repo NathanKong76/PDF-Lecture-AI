@@ -82,6 +82,19 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     fontconfig \
     libfontconfig1 \
+    libfreetype6 \
+    libjpeg8 \
+    libpng16-16 \
+    libopenjp2-7 \
+    libtiff5 \
+    libspiro1 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libpangoft2-1.0-0 \
+    libharfbuzz0b \
+    libfribidi0 \
+    libxcb1 \
+    libx11-6 \
     wget \
     curl \
     ca-certificates \
@@ -92,7 +105,7 @@ RUN apt-get update && apt-get install -y \
 
 # 从构建阶段复制pdf2htmlEX
 COPY --from=builder /usr/local/bin/pdf2htmlEX /usr/local/bin/pdf2htmlEX
-RUN mkdir -p /usr/local/lib && cp -r /usr/local/lib/libpdf2htmlEX.* /usr/local/lib/ 2>/dev/null || echo "No pdf2htmlEX libs found"
+COPY --from=builder /usr/local/lib/libpdf2htmlEX* /usr/local/lib/
 
 # 创建应用用户
 RUN useradd -m -u 1000 appuser && \
