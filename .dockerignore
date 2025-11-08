@@ -97,7 +97,8 @@ __pycache__/
 *.pyc
 *.pyo
 
-# 本地开发配置
+# 本地开发配置（包含敏感信息，不应打包到镜像中）
+.env
 .env.local
 .env.development
 .env.test

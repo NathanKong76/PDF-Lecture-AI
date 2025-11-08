@@ -222,6 +222,18 @@ class HTMLPdf2htmlEXGenerator:
         output_html_path = os.path.join(output_dir, output_html_name)
         
         try:
+            # Ensure output directory exists and is writable
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Check if directory is writable
+            test_file = os.path.join(output_dir, '.write_test')
+            try:
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+            except Exception as e:
+                logger.warning(f"Output directory may not be writable: {e}")
+            
             # Write PDF bytes to temp file
             with open(temp_pdf_path, 'wb') as f:
                 f.write(pdf_bytes)
@@ -233,6 +245,16 @@ class HTMLPdf2htmlEXGenerator:
                 wsl_temp_pdf = HTMLPdf2htmlEXGenerator._convert_to_wsl_path(temp_pdf_path)
                 input_path = wsl_temp_pdf
                 dest_dir = wsl_output_dir
+                
+                # Ensure WSL can access the directory by creating it in WSL first
+                try:
+                    subprocess.run(
+                        ['wsl', 'mkdir', '-p', wsl_output_dir],
+                        capture_output=True,
+                        timeout=5
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not create WSL directory: {e}")
             else:
                 input_path = temp_pdf_path
                 dest_dir = output_dir
@@ -276,13 +298,47 @@ class HTMLPdf2htmlEXGenerator:
                 timeout=300  # 5 minutes timeout
             )
             
+            # Check if output file exists first (even if return code is non-zero)
+            # Sometimes pdf2htmlEX fails on manifest but still generates the HTML
+            output_exists = os.path.exists(output_html_path)
+            
             if result.returncode != 0:
+                # If output file exists despite error, check if it's valid
+                if output_exists:
+                    # Check if HTML file has content
+                    try:
+                        with open(output_html_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            if len(content) > 100:  # Has meaningful content
+                                logger.warning(
+                                    f"pdf2htmlEX reported error (exit code {result.returncode}) "
+                                    f"but output file exists and appears valid. "
+                                    f"Error was: {result.stderr[:500]}"
+                                )
+                                # Continue with the generated file
+                                logger.info(f"Using generated HTML file despite error: {output_html_path}")
+                                return True, output_html_path, None
+                    except Exception as e:
+                        logger.debug(f"Could not read output file: {e}")
+                
+                # If we get here, the error is real
                 error_msg = f"pdf2htmlEX failed (exit code {result.returncode}):\n{result.stderr}"
                 logger.error(error_msg)
+                
+                # Provide more helpful error message for manifest file errors
+                if "manifest" in result.stderr.lower() or "Cannot open" in result.stderr:
+                    error_msg += (
+                        "\n\n提示：这可能是由于以下原因之一：\n"
+                        "1. 输出目录权限不足\n"
+                        "2. WSL 路径转换问题\n"
+                        "3. 临时文件系统限制\n"
+                        "建议：尝试使用 'HTML截图版' 模式作为替代方案"
+                    )
+                
                 return False, None, error_msg
             
             # Check if output file exists
-            if not os.path.exists(output_html_path):
+            if not output_exists:
                 error_msg = "pdf2htmlEX completed but output file not found"
                 logger.error(error_msg)
                 return False, None, error_msg
@@ -313,14 +369,21 @@ class HTMLPdf2htmlEXGenerator:
         """
         import re
         
+        # Normalize to absolute path first
+        abs_path = os.path.abspath(windows_path)
+        
         # Normalize path separators
-        path = windows_path.replace('\\', '/')
+        path = abs_path.replace('\\', '/')
         
         # Convert drive letter: C:/... -> /mnt/c/...
         match = re.match(r'^([A-Za-z]):', path)
         if match:
             drive = match.group(1).lower()
             path = f"/mnt/{drive}" + path[2:]
+        
+        # Ensure path doesn't have trailing slash (except root)
+        if path != '/' and path.endswith('/'):
+            path = path.rstrip('/')
         
         return path
     
