@@ -123,6 +123,9 @@ dmypy.json
 *.swo
 *~
 .roo/
+.iflow/
+.claude/
+.kilocode/
 
 # OS
 .DS_Store
