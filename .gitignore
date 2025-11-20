@@ -4,16 +4,14 @@
 .env.development.local
 .env.test.local
 .env.production.local
-.iflow
-.claude
-.streamlit
-.venv
-.vscode
-# Python
+
+.streamlit/
+
+# Python/
 __pycache__/
 *.py[cod]
 *$py.class
-
+lecturer.spec
 # Distribution / packaging
 .Python
 build/
@@ -124,10 +122,11 @@ dmypy.json
 *.swp
 *.swo
 *~
+.roo/
 
 # OS
 .DS_Store
 Thumbs.db
 
 # Streamlit
-.streamlit/secrets.toml
+.streamlit/
